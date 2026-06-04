@@ -1394,19 +1394,15 @@ def SaveStingrayMaterial(self, ID, TocData, GpuData, StreamData, LoadedData):
                 StingrayTex = StingrayTexture()
                 with open(mat.DEV_DDSPaths[TexIdx], 'r+b') as f:
                     StingrayTex.FromDDS(f.read())
-            else: # 如果是tga,就使用texconv转换dds并保存到软件缓存路径
-                tempdir = tempfile.gettempdir()
-                if "[-_彩色_-]" in mat.DEV_DDSPaths[TexIdx]:
-                    mat.DEV_DDSPaths[TexIdx] = mat.DEV_DDSPaths[TexIdx].replace("[-_彩色_-]", "")
-                    DDS_Export_SRGB(tempdir=tempdir,input_path=mat.DEV_DDSPaths[TexIdx])
-                    
-                elif "[-_线性_-] " in mat.DEV_DDSPaths[TexIdx]:
+            else: # 如果是tga或png,就使用texconv转换dds并保存到软件缓存路径
+                tempdir = tempfile.gettempdir()   
+                if "[-_线性_-] " in mat.DEV_DDSPaths[TexIdx]:
                     mat.DEV_DDSPaths[TexIdx] = mat.DEV_DDSPaths[TexIdx].replace("[-_线性_-] ", "") 
                     DDS_Export_Linear(tempdir=tempdir,input_path=mat.DEV_DDSPaths[TexIdx])
                     
                 else:
-                    DDS_Export_SRGB(tempdir=tempdir,input_path=mat.DEV_DDSPaths[TexIdx])
-                
+                    DDS_Export_Linear(tempdir=tempdir,input_path=mat.DEV_DDSPaths[TexIdx])
+                    
                 tga2dds_path = os.path.join(tempdir, CheckTextureName(mat.DEV_DDSPaths[TexIdx])+".dds")
                 StingrayTex = StingrayTexture()
                 with open(tga2dds_path, 'r+b') as f:
@@ -1496,9 +1492,10 @@ def CheckTextureName(TexPath):
     return file_name
 
 
-def DDS_Export_SRGB(tempdir,input_path):
-    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM_SRGB","-m","1","-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    PrettyPrint("DDS_Export_SRGB", "info")
+# def DDS_Export_SRGB(tempdir,input_path):
+#     subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+#     # subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM_SRGB","-m","1","-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+#     PrettyPrint("DDS_Export_SRGB", "info")
     
 def DDS_Export_Linear(tempdir,input_path):
     subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -1526,7 +1523,7 @@ def LoadStingrayTexture(ID, TocData, GpuData, StreamData, Reload, MakeBlendObjec
         with open(dds_path, 'w+b') as f:
             f.write(dds)
         
-        subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "tga", "-f", "R8G8B8A8_UNORM","-alpha","-sepalpha", "--tga-zero-alpha", dds_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "tga", "-f", "R8G8B8A8_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha", dds_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         if os.path.isfile(tga_path):
             image = bpy.data.images.load(tga_path)
@@ -3014,23 +3011,23 @@ class SetMaterialTexture(Operator, ImportHelper):
     object_id: StringProperty(options={"HIDDEN"})
     tex_idx: IntProperty(options={"HIDDEN"})
     
-    def ColorSpaceEnum():
-        return [("sRGB", "sRGB", ""), ("Linear", "Linear", "")]
+    # def ColorSpaceEnum():
+    #     return [("sRGB", "sRGB", ""), ("Linear", "Linear", "")]
 
-    SaveColorSpace: EnumProperty(name="色彩空间", items=[("Linear", "Linear", ""),("sRGB", "sRGB", "")])
+    # SaveColorSpace: EnumProperty(name="色彩空间", items=[("Linear", "Linear", ""),("sRGB", "sRGB", "")])
    
     
     
-    def draw(self, context):
-        addon_prefs = AQ_PublicClass.get_addon_prefs()
-        is_tga_on = addon_prefs.tga_Tex_Import_Switch
-        is_png_on = addon_prefs.png_Tex_Import_Switch
-        if is_tga_on or is_png_on:
-            layout = self.layout
-            layout.label(text="颜色贴图使用sRGB,法向金属糙度等使用线性",icon="INFO")
-            layout.label(text="导入的纹理在保存时将会转换为下列的色彩空间",icon="INFO")
-            layout.label(text="纹理色彩空间为：")
-            layout.prop(self, "SaveColorSpace")
+    # def draw(self, context):
+    #     addon_prefs = AQ_PublicClass.get_addon_prefs()
+    #     is_tga_on = addon_prefs.tga_Tex_Import_Switch
+    #     is_png_on = addon_prefs.png_Tex_Import_Switch
+    #     if is_tga_on or is_png_on:
+    #         layout = self.layout
+    #         layout.label(text="颜色贴图使用sRGB,法向金属糙度等使用线性",icon="INFO")
+    #         layout.label(text="导入的纹理在保存时将会转换为下列的色彩空间",icon="INFO")
+    #         layout.label(text="纹理色彩空间为：")
+    #         layout.prop(self, "SaveColorSpace")
             
     
     def addprefix(self, path, prefix):
@@ -3043,10 +3040,10 @@ class SetMaterialTexture(Operator, ImportHelper):
         Entry = Global_TocManager.GetEntry(int(self.object_id), MaterialID)
         if Entry != None:
             if Entry.IsLoaded:
-                if self.SaveColorSpace == "sRGB" and ".tga" in os.path.basename(self.filepath):
+                # if self.SaveColorSpace == "sRGB" and ".tga" in os.path.basename(self.filepath):
                     
-                    Entry.LoadedData.DEV_DDSPaths[self.tex_idx] = self.addprefix(path=self.filepath,prefix="[-_彩色_-]")
-                if self.SaveColorSpace == "Linear" and ".tga" in os.path.basename(self.filepath):
+                #     Entry.LoadedData.DEV_DDSPaths[self.tex_idx] = self.addprefix(path=self.filepath,prefix="[-_彩色_-]")
+                if ".tga" in os.path.basename(self.filepath) or ".png" in os.path.basename(self.filepath):
                     
                     Entry.LoadedData.DEV_DDSPaths[self.tex_idx] = self.addprefix(path=self.filepath,prefix="[-_线性_-] ")
                 else:
@@ -3066,11 +3063,11 @@ class SetMaterialTexture(Operator, ImportHelper):
         if not is_tga_on and not is_png_on:
             self.filter_glob = "*.dds"
         elif is_tga_on and is_png_on:
-            self.filter_glob = "*.tga;*.png"
+            self.filter_glob = "*.tga;*.png;*.dds"
         elif is_tga_on and not is_png_on:
-            self.filter_glob = "*.tga"
+            self.filter_glob = "*.tga;*.dds"
         elif is_png_on and not is_tga_on:
-            self.filter_glob = "*.png"
+            self.filter_glob = "*.png;*.dds"
             
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
