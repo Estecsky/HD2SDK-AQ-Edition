@@ -1140,6 +1140,8 @@ class TocManager():
         self.Patches = []
         self.ActivePatch = None
         
+        all_archives_UndoModified()
+        
     def SetActive(self, Archive):
         if Archive != self.ActiveArchive:
             self.ActiveArchive = Archive
@@ -1495,11 +1497,11 @@ def CheckTextureName(TexPath):
 
 
 def DDS_Export_SRGB(tempdir,input_path):
-    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "BC7_UNORM_SRGB","-m","1","-srgb","-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM_SRGB","-m","1","-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     PrettyPrint("DDS_Export_SRGB", "info")
     
 def DDS_Export_Linear(tempdir,input_path):
-    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "BC7_UNORM","-m","1","--ignore-srgb","-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     PrettyPrint("DDS_Export_Linear", "info")
 #endregion
 
@@ -1524,7 +1526,7 @@ def LoadStingrayTexture(ID, TocData, GpuData, StreamData, Reload, MakeBlendObjec
         with open(dds_path, 'w+b') as f:
             f.write(dds)
         
-        subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "tga", "-f", "R8G8B8A8_UNORM", dds_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "tga", "-f", "R8G8B8A8_UNORM","-alpha","-sepalpha", "--tga-zero-alpha", dds_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         if os.path.isfile(tga_path):
             image = bpy.data.images.load(tga_path)
@@ -1544,7 +1546,7 @@ def BlendImageToStingrayTexture(image, StingrayTex):
     image.filepath_raw = tga_path
     image.save()
 
-    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-f", StingrayTex.Format, dds_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha", tga_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     
     if os.path.isfile(dds_path):
         with open(dds_path, 'r+b') as f:
@@ -2543,10 +2545,11 @@ class SaveStingrayMeshOperator(Operator):
 
             
         
-        
+        have_self_id = False
         # 转换ID检查与修正
         if SwapID_list:
             if ID in SwapID_list:
+                have_self_id = True
                 if SwapID_list.count(ID) > 1:
                     self.report({"ERROR"}, f"Object: {object.name} 的转换ID栏最多只能填一次自身ID.")
                     return {'CANCELLED'}
@@ -2575,6 +2578,12 @@ class SaveStingrayMeshOperator(Operator):
                 else:
                     self.report({'INFO'}, f"Entry ID: {Entry.FileID} 保持自身")
 
+            if not have_self_id:
+                # 快速手动回滚，遗留修改的原因暂未知，目前拿这个应付一下
+                Ori_Entry = Global_TocManager.GetEntry(int(ID), UnitID)
+                if Ori_Entry and Ori_Entry.IsModified:
+                    Ori_Entry.UndoModifiedData()
+                # print(f"Ori_Entry IsModified: {Ori_Entry.IsModified}")
                 
         
         else:
@@ -2628,7 +2637,7 @@ class BatchSaveStingrayMeshOperator(Operator):
                 if i.type == "MESH":
                     # 4.3 compatibility change
                     if bpy.app.version[0] >= 4 and bpy.app.version[1] >= 1:
-                        i.data.shade_auto_smooth(use_auto_smooth=True)
+                        i.data.shade_smooth()
                     else:
                         i.data.use_auto_smooth = True
                         i.data.auto_smooth_angle = 3.14159
@@ -2694,6 +2703,7 @@ class BatchSaveStingrayMeshOperator(Operator):
             
             MeshList = MeshData[ID]
             
+            have_self_id = False
             if SwapID_list:
                 # 预先检查是否有自身ID,有就放到末尾
                 if ID in SwapID_list:
@@ -2701,6 +2711,7 @@ class BatchSaveStingrayMeshOperator(Operator):
                         self.report({"ERROR"}, f"Object ID 为 {ID} 的转换ID栏最多只能填一次自身ID.")
                         return {'CANCELLED'}
 
+                    have_self_id = True
                     SwapID_list.remove(ID)
                     #将其放到末尾
                     SwapID_list.append(ID)
@@ -2741,6 +2752,11 @@ class BatchSaveStingrayMeshOperator(Operator):
                     else:
                         self.report({'INFO'}, f"Entry ID: {Entry.FileID} 保持自身")
                         
+                if not have_self_id:
+                    # 快速手动回滚，遗留修改的原因暂未知，拿这个应付一下
+                    Ori_Entry = Global_TocManager.GetEntryByLoadArchive(int(ID), UnitID)
+                    if Ori_Entry and Ori_Entry.IsModified:
+                        Ori_Entry.UndoModifiedData()
             
             else:
                 for mesh_index, mesh in MeshList.items():
@@ -3609,6 +3625,24 @@ class CopyDecimalIDOperator(Operator):
         return {'FINISHED'}
     
     
+class ButtonAQSDKGitHub(bpy.types.Operator):
+    bl_idname = "aqsdk_web.githubweb"
+    bl_label = "aqsdk_GitHub"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        webbrowser.open("https://github.com/Estecsky/io_scene_helldivers2_AQ")
+        return {"FINISHED"}
+
+
+class ButtonAQSDKBilibili(bpy.types.Operator):
+    bl_idname = "aqsdk_web.bilibiliweb"
+    bl_label = "aqsdk_Bilibili"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        webbrowser.open("https://space.bilibili.com/3493298962434150")
+        return {"FINISHED"}
     
 def CustomPropertyContext(self, context):
     layout = self.layout
@@ -3646,6 +3680,13 @@ def CustomPropertyContext(self, context):
 
 
 #region Menus and Panels
+def all_archives_UndoModified():
+    if Global_TocManager.LoadedArchives:
+        for Archive in Global_TocManager.LoadedArchives:
+            for Entry in Archive.TocEntries:
+                if Entry != None and Entry.IsModified:
+                    Entry.UndoModifiedData()
+
 
 def update_abs_path(self, context):
     """更新时强制转换为绝对路径并覆盖存储"""
@@ -4129,6 +4170,24 @@ class HellDivers2ToolsPanel(Panel):
             Global_TocManager.DrawChain = DrawChain
         Global_TocManager.SavedFriendlyNames = NewFriendlyNames
         Global_TocManager.SavedFriendlyNameIDs = NewFriendlyIDs
+       
+
+class AQ_Modified_Credits(bpy.types.Panel):
+    bl_order = 99
+    bl_label = "作者"
+    bl_idname = "AQ_PT_SDK_Credits"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Modding"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="魔改版作者：AQ_Echoo")
+        col = box.column()
+        col.operator(ButtonAQSDKGitHub.bl_idname, text="GitHub", icon="URL")
+        col.operator(ButtonAQSDKBilibili.bl_idname, text="Bilibili", icon="URL")
 
 class WM_MT_button_context(Menu):
     bl_label = "Entry Context Menu"
@@ -4342,6 +4401,9 @@ classes = (
     CopyCustomPropertyOperator,
     PasteCustomPropertyOperator,
     CopyDecimalIDOperator,
+    AQ_Modified_Credits,
+    ButtonAQSDKBilibili,
+    ButtonAQSDKGitHub,
     # SearchArmatureAnimationsOperator,
 )
 
