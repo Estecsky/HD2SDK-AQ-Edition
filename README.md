@@ -1,4 +1,4 @@
-## 点击下载：[io_scene_helldivers2_AQ](https://github.com/Estecsky/io_scene_helldivers2_AQ/archive/refs/heads/main.zip)
+## 点击下载：[HD2SDK-AQ-Edition](https://github.com/Estecsky/io_scene_helldivers2_AQ/archive/refs/heads/main.zip)
 
 # [AQ_Ex](https://space.bilibili.com/3493298962434150)个人魔改版
 
@@ -21,7 +21,7 @@
 - 首次加载archive提速
 
 # 下载与更新
-### 下载最新版本[io_scene_helldivers2_AQ](https://github.com/Estecsky/io_scene_helldivers2_AQ/archive/refs/heads/main.zip)
+### 下载最新版本[HD2SDK-AQ-Edition](https://github.com/Estecsky/io_scene_helldivers2_AQ/archive/refs/heads/main.zip)
 ### 可在插件偏好属性中检查并更新，需要有能访问GitHub的代理网络
 
 # 参考
