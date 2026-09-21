@@ -1316,7 +1316,7 @@ class SingletonUpdater:
                 self._update_version = new_version
                 self._update_link = link
                 self.save_updater_json()
-                return (True, new_version, link)
+                return (False, new_version, link)
             else:
                 # Bypass releases and look at timestamp of last update from a
                 # branch compared to now, see if commit values match or not.

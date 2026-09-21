@@ -22,6 +22,7 @@ Implements draw calls, popups, and operators that use the addon_updater.
 """
 
 import os
+import re
 import traceback
 
 import bpy
@@ -1265,6 +1266,12 @@ def skip_tag_function(self, tag):
             if tag["name"].lower() == branch:
                 return False
 
+    # Public releases use V2.4.3 (older releases also used V1.3).
+    # The engine otherwise extracts digits from any text, incorrectly treating
+    # e.g. V2.4.4-dev.1 as a newer stable release.
+    if not re.fullmatch(r"[vV]?\d+\.\d+(?:\.\d+)?", tag["name"]):
+        return True
+
     # Function converting string to tuple, ignoring e.g. leading 'v'.
     # Be aware that this strips out other text that you might otherwise
     # want to be kept and accounted for when checking tags (e.g. v1.1a vs 1.1b)
@@ -1358,12 +1365,12 @@ def register(bl_info):
 
     # Choose your own repository, must match git name for GitHUb and Bitbucket,
     # for GitLab use project ID (numbers only).
-    updater.repo = "io_scene_helldivers2_AQ"
+    updater.repo = "HD2SDK-AQ-Edition"
 
     # updater.addon = # define at top of module, MUST be done first
 
     # Website for manual addon download, optional but recommended to set.
-    updater.website = "https://github.com/Estecsky/io_scene_helldivers2_AQ/"
+    updater.website = "https://github.com/Estecsky/HD2SDK-AQ-Edition/"
 
     # Addon subfolder path.
     # "sample/path/to/addon"
@@ -1392,7 +1399,7 @@ def register(bl_info):
     updater.backup_current = True  # True by default
 
     # Sample ignore patterns for when creating backup of current during update.
-    updater.backup_ignore_patterns = ["__pycache__"]
+    updater.backup_ignore_patterns = ["__pycache__", ".git"]
     # Alternate example patterns:
     # updater.backup_ignore_patterns = [".git", "__pycache__", "*.bat", ".gitignore", "*.exe"]
 
@@ -1411,6 +1418,14 @@ def register(bl_info):
         "*.py",
         "*.json",
         "*.jpg",
+        # Shipped SDK data and native tools must advance with the Python code.
+        # Only files present in the incoming package are replaced; no wildcard
+        # deletion of user configuration or unrelated files is performed.
+        "*.txt",
+        "*.material",
+        "*.exe",
+        "*.pyd",
+        "*.dll",
         "README.md",
         "LICENSE.txt",
     ]
@@ -1451,7 +1466,10 @@ def register(bl_info):
     # but the user has the option from user preferences to directly
     # update to the master branch or any other branches specified using
     # the "install {branch}/older version" operator.
-    updater.include_branches = False
+    updater.include_branches = True
+    # Branch installs are explicitly requested by the user. Automatic checks
+    # compare stable tags, not main commits (unsupported by this engine).
+    updater.include_branch_auto_check = False
 
     # (GitHub only) This options allows using "releases" instead of "tags",
     # which enables pulling down release logs/notes, as well as installs update
@@ -1468,7 +1486,7 @@ def register(bl_info):
     # Note: updater.include_branch_list defaults to ['master'] branch if set to
     # none. Example targeting another multiple branches allowed to pull from:
     # updater.include_branch_list = ['master', 'dev']
-    updater.include_branch_list = None  # None is the equivalent = ['master']
+    updater.include_branch_list = ["main"]
 
     # Only allow manual install, thus prompting the user to open
     # the addon's web page to download, specifically: updater.website

@@ -1,11 +1,11 @@
 bl_info = {
-    "name": "Helldivers 2 Archives",
+    "name": "HD2SDK AQ Edition",
     "blender": (4, 0, 0),
     "category": "Import-Export",
     "author": "kboykboy2, AQ_Echoo",
     "warning": "此为修改版",
     "version": (2, 4, 3),
-    "doc_url": "https://github.com/Estecsky/io_scene_helldivers2_AQ"
+    "doc_url": "https://github.com/Estecsky/HD2SDK-AQ-Edition"
 }
 
 #region Imports
@@ -3499,7 +3499,7 @@ class ButtonAQGitHub(bpy.types.Operator):
     bl_description = "打开AQ魔改版插件的 GitHub页面"
 
     def execute(self, context):
-        webbrowser.open("https://github.com/Estecsky/io_scene_helldivers2_AQ")
+        webbrowser.open("https://github.com/Estecsky/HD2SDK-AQ-Edition")
         return {"FINISHED"}
 
 class ArchiveSpreadsheetOperator(Operator):
@@ -3628,7 +3628,7 @@ class ButtonAQSDKGitHub(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        webbrowser.open("https://github.com/Estecsky/io_scene_helldivers2_AQ")
+        webbrowser.open("https://github.com/Estecsky/HD2SDK-AQ-Edition")
         return {"FINISHED"}
 
 

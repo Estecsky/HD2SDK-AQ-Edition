@@ -3,3 +3,7 @@ io_scene_helldivers2_aq_updater/io_scene_helldivers2_AQ_updater_status.json
 get_update_lists/kdoc_result.json
 hashlists/update_archive_listCN.txt
 get_update_lists/kdoc_log.txt
+/tests/
+/build/
+/dist/
+/tools/
