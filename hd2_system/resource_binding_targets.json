@@ -5797,6 +5797,155 @@
           "key": "cd3d20dc"
         }
       ]
+    },
+    "5717aeb23774a749": {
+      "domain": "BODY",
+      "equipment": [
+        {
+          "unit_ids": [
+            "019bf87ced9b42d5",
+            "06b7cccc1641cac4",
+            "09885888d1c5d458",
+            "3c33cf10a26cbb3e",
+            "424143c543636a11",
+            "46ffe359cbc5c7ab",
+            "4c51daf069465229",
+            "54831952234fea57",
+            "59bf0b13f99a6587",
+            "6b0d148090f6b52f",
+            "770b466034a04cd6",
+            "7d27b0c541995a46",
+            "7e84361791e8a540",
+            "81329826dc68256a",
+            "8c32888a761744de",
+            "8ecc77a7baf2d033",
+            "b14ff7f93ec6836d",
+            "bdc8fb20c5f40497",
+            "c3d097b884580656",
+            "cb49537d6af4061a",
+            "de098373dce0621b",
+            "e1b01f83f9199fd0"
+          ],
+          "key": "8c6ae37c"
+        }
+      ]
+    },
+    "5fdb046d58a7c28b": {
+      "domain": "HELMET",
+      "equipment": [
+        {
+          "unit_ids": [
+            "723c638b5bef16e4"
+          ],
+          "key": "2d61f0f9"
+        }
+      ]
+    },
+    "0c206dbe38b89339": {
+      "domain": "BODY",
+      "equipment": [
+        {
+          "unit_ids": [
+            "0d06c96c1662f8d5",
+            "0e47659688158c46",
+            "24be1c8e486a5372",
+            "30431c757836d842",
+            "348dc9adfa39e7a4",
+            "391286297688ddc2",
+            "3ada3447bfd81059",
+            "3c33cf10a26cbb3e",
+            "616c4348fc923b54",
+            "6ec6200bb1a81f14",
+            "716f4aa56d5c4aee",
+            "744819ec02a3c6ef",
+            "7d6ecd93a6848fc4",
+            "80ebe16e6a286304",
+            "8eea1853cf064ac5",
+            "998b1ed8d8221c2f",
+            "a50d91efe81897d8",
+            "ab09378ba33c41ba",
+            "bceec3855b670337",
+            "c71362e4a31dd5a0",
+            "dcd27935f08e1fa3",
+            "e5d2cc87e40a9494",
+            "eca0148309a3ac52"
+          ],
+          "key": "3412f5e4"
+        }
+      ]
+    },
+    "16bf8d02fa2801b8": {
+      "domain": "HELMET",
+      "equipment": [
+        {
+          "unit_ids": [
+            "9e34424a44677cc4"
+          ],
+          "key": "ede9d6b7"
+        }
+      ]
+    },
+    "5ad0c7bf483d382a": {
+      "domain": "BODY",
+      "equipment": [
+        {
+          "unit_ids": [
+            "0afe47221b85e48a",
+            "137d35fabc152cdf",
+            "41085162a7ab8e90",
+            "4618b2c9eb176c91",
+            "4e28cada328d5b84",
+            "5968b69d6854889c",
+            "5bf3f4d3c3e62720",
+            "5c0eaedefa81dcc2",
+            "623c5fd06db8c39f",
+            "6429737a970fcada",
+            "6a5c998c61294627",
+            "7ecb4bb1ceace742",
+            "8f28d59cc34616fd",
+            "8f8ecfbfbbcc9b93",
+            "949a9f6c28276b21",
+            "a37373813346241b",
+            "b14e0e498b6934ee",
+            "b3c77b482e7c1f49",
+            "b67d35ea17020a77",
+            "e5575eb7f8e702e5",
+            "e964f462cc17684e",
+            "ea846ef460cc5ba0",
+            "eb333b12f792a113",
+            "f0462d781cdf8f0d",
+            "fe00f8aa9f0f557c"
+          ],
+          "key": "f8b8cf9b"
+        }
+      ]
+    },
+    "9fcde56b5a3667f2": {
+      "domain": "HELMET",
+      "equipment": [
+        {
+          "unit_ids": [
+            "3b695637fa81e193"
+          ],
+          "key": "37c61642"
+        }
+      ]
     }
+  },
+  "bfm_catalog_update": {
+    "updated_local": "2026-09-29T22:36:39.918491+08:00",
+    "workbook": "地狱老司机2 Archive ID中文收集表 (2).xlsx",
+    "sheet": "盔甲部位ID表",
+    "rows": [
+      "A545:C561",
+      "F905:H921",
+      "K527:M543"
+    ],
+    "armor_codes": [
+      "BFM-16",
+      "BFM-77",
+      "BFM-220"
+    ],
+    "verification": "Exact decimal semantic IDs matched retained equipment registry Unit identities; body and helmet keys joined by Archive. Save/export/visual acceptance remains pending."
   }
 }

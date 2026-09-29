@@ -212,7 +212,7 @@ def build_runtime_difference_manifest(plan, rig_profile_unit_ids=(), catalog=Non
         part_rows.append((part_name, base_unit, options))
 
     if len(part_rows) + len(cleanup) > 32:
-        raise RuntimeManifestError("身体差分与独立甲片路由超过运行时 32 个槽位限制")
+        raise RuntimeManifestError("身体差分与独立甲片路由超过运行时 32 个槽位限制，未修改 Patch")
     lines = [
         "manifest_version=5" if cleanup else "manifest_version=4",
         f"manifest_id={manifest_id}",

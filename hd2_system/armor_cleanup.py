@@ -49,7 +49,7 @@ def build_cleanup_plan(plan, active_unit_ids, saved_unit_ids, *, parts=None, tar
     protected = {int(job.native_unit_id) for job in jobs}
     published = {int(job.published_unit_id or job.native_unit_id) for job in jobs}
     if not published <= saved:
-        raise IndependentPackagingError('当前 Patch 缺少本次计划的部位/差分，请重新保存')
+        raise IndependentPackagingError('当前 Patch 缺少本次计划的部位/差分，请先重新保存')
     owned_active = {int(value, 16) for value in target['unit_ids']} & active
     if not protected <= owned_active:
         raise IndependentPackagingError('已保存计划的部位超出当前护甲资源边界')
@@ -65,7 +65,7 @@ def build_cleanup_plan(plan, active_unit_ids, saved_unit_ids, *, parts=None, tar
         alias = int.from_bytes(hashlib.blake2b(payload, digest_size=8, person=b"HD2Point").digest(), "little")
         row = {"native_unit_id": str(native), "point_unit_id": str(alias)}
         if alias == 0 or (alias in occupied and previous.get(native) != row):
-            raise IndependentPackagingError("独立甲片点网格 ID 冲突")
+            raise IndependentPackagingError("独立甲片点网格 ID 冲突，未修改 Patch")
         occupied.add(alias)
         rows.append(row)
     return rows
