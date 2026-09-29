@@ -22,7 +22,8 @@ class AQ_Prefs:
 
 class AQ_PublicClass(AQ_Prefs):
 
-    AQ_ADDON_NAME = basename(dirname(realpath(__file__)))
+    # This module lives in <installed-addon>.preferences, not the package root.
+    AQ_ADDON_NAME = __package__.rsplit('.', 1)[0]
     
 class AQ_StaticMeshError(Exception):
     def __init__(self, value):

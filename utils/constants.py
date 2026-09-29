@@ -14,10 +14,12 @@ AnimationID = 10600967118105529382
 StateMachineID = 11855396184103720540
 StringID = 979299457696010195
 PhysicsID = 6877563742545042104
+XamlID = 5097092548853106021
+LuaID = 11623383793923069922
 
 Global_MaterialParentIDs = {
     15235712479575174153 : "bloom",
-    6101987038150196875 : "original",
+    10333121450921449806 : "original",
     17265463703140804126 : "advanced_default",
     16342443352312747293 : "flowing",
     9576304397847579354 : "glass",
@@ -25,6 +27,10 @@ Global_MaterialParentIDs = {
     15356477064658408677 : "basic",
     15586118709890920288 : "alphaclip",
     17720495965476876300 : "armorlut",
+    14268580320343776576 : "alphaclip+",
+    3263010904053440413  : "reticle",
+    1225429528025764418  : "translucent_flowing",
+    7754973390829672288  : "cutout_scope"
     # 9576304397847579354  : "translucent",
 }
 
@@ -75,6 +81,8 @@ Global_TypeIDs = [
     0xe985c5f61c169997, #speedtree
     0xf7a09f8bb35a1d49, #havok_physics_properties
     0xfcaaf813b4d3cc1e, #camera_shake
+    0x5ee65304478f8db5, #bik2
+    0x46bc82aae9ae0565, #unknown
 ]
 
 Global_IconDict = {
@@ -91,4 +99,6 @@ Global_IconDict = {
     StateMachineID: 'DRIVER',
     StringID: 'WORDWRAP_ON',
     PhysicsID: 'PHYSICS',
+    XamlID: 'WORKSPACE',
+    LuaID: 'FILE_SCRIPT',
 }

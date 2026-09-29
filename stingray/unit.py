@@ -1,22 +1,66 @@
-from math import ceil, sqrt # type: ignore
+from math import ceil, sqrt
+import math
 
 import mathutils
 import bpy
-import random
 import bmesh
+import json
+from copy import deepcopy
 
 from ..utils.memoryStream import MemoryStream, MakeTenBitUnsigned, TenBitUnsigned
 from ..utils.logger import PrettyPrint
 from .hash import murmur32_hash
 from ..utils.constants import *
-from ..AQ_Prefs_HD2 import AQ_PublicClass , AQ_StaticMeshError
+from ..preferences.access import AQ_PublicClass , AQ_StaticMeshError
 from .material import AddMaterialToBlend_EMPTY
+from ..hd2_system.skin_weights import normalize_half4
+from ..hd2_system.independent_bone_closure import independent_export_bones
 
 Global_MaterialSlotNames = {}
 
+HD2_LIGHT_NAME_HASH_PROP = "HD2SDK_LightNameHash"
+HD2_LIGHT_UNIT_ID_PROP = "HD2SDK_LightUnitID"
+HD2_LIGHT_VOLUMETRIC_PROP = "Volumetric"
+HD2_LIGHT_DIRECT_PROP = "Direct Lighting"
+HD2_LIGHT_IMPORTED_UNITS_PROP = "HD2SDK_LightUnitsImported"
+
+
+def _next_positive_offset(current, *offsets):
+    candidates = [offset for offset in offsets if offset and offset > current]
+    return min(candidates) if candidates else None
+
+
+def _read_optional_lod_group_region(stream, lod_offset, following_offset):
+    """Split anonymous padding from the optional pointed-to LOD section."""
+
+    current = stream.tell()
+    end = current if following_offset is None else following_offset
+    if end < current or end > len(stream.Data):
+        raise ValueError("LOD Group region end offset is invalid")
+
+    has_lod_section = lod_offset > 0
+    if has_lod_section:
+        if lod_offset < current or lod_offset > end:
+            raise ValueError("LOD Group offset is outside its Unit region")
+        prefix = stream.bytes(bytearray(), lod_offset - current)
+        data = stream.bytes(bytearray(), end - lod_offset)
+    else:
+        prefix = stream.bytes(bytearray(), end - current)
+        data = bytearray()
+    return has_lod_section, prefix, data
+
+
+def _write_optional_lod_group_region(stream, has_lod_section, prefix, data):
+    """Write the region while retaining a zero offset for an absent section."""
+
+    stream.bytes(prefix, len(prefix))
+    lod_offset = stream.tell() if has_lod_section else 0
+    stream.bytes(data, len(data))
+    return lod_offset
+
 class StingrayMeshFile:
     def __init__(self):
-        self.HeaderData1        = bytearray(28);  self.HeaderData2        = bytearray(20); self.UnReversedData1  = bytearray(); self.UnReversedData2    = bytearray()
+        self.HeaderData1        = bytearray(28); self.HeaderData2 = bytearray(8); self.HeaderData3 = bytearray(12); self.UnReversedData1 = bytearray(); self.UnReversedData2 = bytearray()
         self.StreamInfoOffset   = self.EndingOffset = self.MeshInfoOffset = self.NumStreams = self.NumMeshes = self.EndingBytes = self.StreamInfoUnk2 = self.HeaderUnk = self.MaterialsOffset = self.NumMaterials = self.NumBoneInfo = self.BoneInfoOffset = 0
         self.StreamInfoOffsets  = self.StreamInfoUnk = self.StreamInfoArray = self.MeshInfoOffsets = self.MeshInfoUnk = self.MeshInfoArray = []
         self.CustomizationInfoOffset = self.UnkHeaderOffset1 = self.ConnectingBoneHashOffset = self.TransformInfoOffset = self.UnkRef1 = self.BonesRef = self.CompositeRef = 0
@@ -24,6 +68,7 @@ class StingrayMeshFile:
         self.RawMeshes = []
         self.SectionsIDs = []
         self.MaterialIDs = []
+        self.LightList = LightList()
         self.DEV_MeshInfoMap = [] # Allows removing of meshes while mapping them to the original meshes
         self.CustomizationInfo = CustomizationInfo()
         self.TransformInfo     = TransformInfo()
@@ -33,10 +78,16 @@ class StingrayMeshFile:
         self.UnreversedLODGroupListData = bytearray()
         self.UnreversedWwiseCallbackData = bytearray()
         self.UnreversedPreLightListData = bytearray()
+        self.UnreversedPreWwiseCallbackData = bytearray()
+        self.UnreversedPreLODGroupListData = bytearray()
         self.UnreversedLODGroupListDataOffset = 0
+        self._has_lod_group_list_section = False
         self.UnkHeaderData1 = bytearray()
         self.StateMachineRef = self.UnkRef2 = self.LodGroupOffset = 0
         self.NameHash = 0
+        self.LightListOffset = 0
+        self.UnkPreLightListOffset = 0
+        self.WwiseCallbackOffset = 0
         self.LoadMaterialSlotNames = True
         self.Version = 0
 
@@ -102,16 +153,19 @@ class StingrayMeshFile:
         self.UnkRef2            = f.uint64(self.UnkRef2)
         self.StateMachineRef    = f.uint64(self.StateMachineRef)
         self.HeaderData1        = f.uint32(self.HeaderData1)
-        
-        if f.IsWriting() and self.Version == 10800437:
+
+        if f.IsWriting() and self.Version in [10800437, 10800436, 1]:
             self.Version        = f.uint32(10800438)
         else:
             self.Version        = f.uint32(self.Version)
         print(f"Unit Version: {self.Version}")
-        
+
         self.UnreversedLODGroupListDataOffset = f.uint32(self.UnreversedLODGroupListDataOffset)
         self.TransformInfoOffset= f.uint32(self.TransformInfoOffset)
-        self.HeaderData2        = f.bytes(self.HeaderData2, 20)
+        self.LightListOffset = f.uint32(self.LightListOffset)
+        self.UnkPreLightListOffset = f.uint32(self.UnkPreLightListOffset)
+        self.WwiseCallbackOffset = f.uint32(self.WwiseCallbackOffset)
+        self.HeaderData2 = f.bytes(self.HeaderData2, 8)
         self.CustomizationInfoOffset  = f.uint32(self.CustomizationInfoOffset)
         self.UnkHeaderOffset1   = f.uint32(self.UnkHeaderOffset1)
         self.ConnectingBoneHashOffset   = f.uint32(self.ConnectingBoneHashOffset)
@@ -121,6 +175,11 @@ class StingrayMeshFile:
         self.MeshInfoOffset     = f.uint32(self.MeshInfoOffset)
         self.HeaderUnk          = f.uint64(self.HeaderUnk)
         self.MaterialsOffset    = f.uint32(self.MaterialsOffset)
+        self.HeaderData3 = f.bytes(self.HeaderData3, 12)
+        if f.IsReading():
+            self._has_lod_group_list_section = (
+                self.UnreversedLODGroupListDataOffset > 0
+            )
 
         if f.IsReading() and self.MeshInfoOffset == 0:
             raise Exception("Unsupported Mesh Format (No geometry)")
@@ -136,59 +195,197 @@ class StingrayMeshFile:
                 self.BoneNames = Entry.LoadedData.Names
                 self.BoneHashes = Entry.LoadedData.BoneHashes
 
-        # Get Customization data: READ ONLY
+        # Customization metadata is read for Blender naming but preserved as raw bytes on save.
         if f.IsReading() and self.CustomizationInfoOffset > 0:
-            loc = f.tell(); f.seek(self.CustomizationInfoOffset)
+            return_offset = f.tell()
+            f.seek(self.CustomizationInfoOffset)
             self.CustomizationInfo.Serialize(f)
-            f.seek(loc)
-        # Get Transform data: READ ONLY
-        #if f.IsReading() and self.TransformInfoOffset > 0:
-        UnreversedCustomizationData_Size = 0
-        if self.TransformInfoOffset > 0: # need to update other offsets?
-            loc = f.tell(); f.seek(self.TransformInfoOffset)
+            f.seek(return_offset)
+
+        # Preserve bytes before the first addressed optional section. Some Unit
+        # variants align that section without exposing a separate padding offset.
+        if f.IsReading():
+            following = _next_positive_offset(
+                f.tell(),
+                self.WwiseCallbackOffset,
+                self.UnkPreLightListOffset,
+                self.LightListOffset,
+                self.UnreversedLODGroupListDataOffset,
+                self.TransformInfoOffset,
+                self.CustomizationInfoOffset,
+                self.UnkHeaderOffset1,
+                self.ConnectingBoneHashOffset,
+                self.BoneInfoOffset,
+                self.StreamInfoOffset,
+                self.MeshInfoOffset,
+                self.EndingOffset,
+            )
+            data_size = following - f.tell() if following is not None else 0
+        else:
+            data_size = len(self.UnreversedPreWwiseCallbackData)
+        self.UnreversedPreWwiseCallbackData = f.bytes(
+            self.UnreversedPreWwiseCallbackData, data_size
+        )
+
+        # Preserve the opaque audio and pre-light sections before the HD2 light table.
+        if self.WwiseCallbackOffset > 0:
+            if f.IsReading():
+                f.seek(self.WwiseCallbackOffset)
+                following = _next_positive_offset(
+                    f.tell(),
+                    self.UnkPreLightListOffset,
+                    self.LightListOffset,
+                    self.UnreversedLODGroupListDataOffset,
+                    self.TransformInfoOffset,
+                    self.CustomizationInfoOffset,
+                    self.UnkHeaderOffset1,
+                    self.ConnectingBoneHashOffset,
+                    self.BoneInfoOffset,
+                    self.StreamInfoOffset,
+                    self.MeshInfoOffset,
+                    self.EndingOffset,
+                )
+                data_size = following - f.tell() if following is not None else 0
+            else:
+                self.WwiseCallbackOffset = f.tell()
+                data_size = len(self.UnreversedWwiseCallbackData)
+            self.UnreversedWwiseCallbackData = f.bytes(
+                self.UnreversedWwiseCallbackData, data_size
+            )
+
+        if self.UnkPreLightListOffset > 0:
+            if f.IsReading():
+                f.seek(self.UnkPreLightListOffset)
+                following = _next_positive_offset(
+                    f.tell(),
+                    self.LightListOffset,
+                    self.UnreversedLODGroupListDataOffset,
+                    self.TransformInfoOffset,
+                    self.CustomizationInfoOffset,
+                    self.UnkHeaderOffset1,
+                    self.ConnectingBoneHashOffset,
+                    self.BoneInfoOffset,
+                    self.StreamInfoOffset,
+                    self.MeshInfoOffset,
+                    self.EndingOffset,
+                )
+                data_size = following - f.tell() if following is not None else 0
+            else:
+                self.UnkPreLightListOffset = f.tell()
+                data_size = len(self.UnreversedPreLightListData)
+            self.UnreversedPreLightListData = f.bytes(
+                self.UnreversedPreLightListData, data_size
+            )
+
+        has_light_section = self.LightListOffset > 0 or bool(self.LightList.lights)
+        if f.IsReading():
+            if self.LightListOffset > 0:
+                light_end = _next_positive_offset(
+                    self.LightListOffset,
+                    self.UnreversedLODGroupListDataOffset,
+                    self.TransformInfoOffset,
+                    self.CustomizationInfoOffset,
+                    self.UnkHeaderOffset1,
+                    self.ConnectingBoneHashOffset,
+                    self.BoneInfoOffset,
+                    self.StreamInfoOffset,
+                    self.MeshInfoOffset,
+                    self.EndingOffset,
+                )
+                if self.LightListOffset + 16 > len(f.Data):
+                    raise ValueError("HD2 Light table offset is outside the Unit data")
+                f.seek(self.LightListOffset)
+                self.LightList.Serialize(f, end_offset=light_end)
+        elif has_light_section:
+            self.LightListOffset = f.tell()
+            self.LightList.Serialize(f)
+        else:
+            self.LightListOffset = 0
+
+        # Preserve anonymous padding independently from the optional LOD-group
+        # section so an originally absent (zero) offset remains zero on write.
+        if f.IsReading():
+            current = f.tell()
+            following = _next_positive_offset(
+                current,
+                self.TransformInfoOffset,
+                self.CustomizationInfoOffset,
+                self.UnkHeaderOffset1,
+                self.ConnectingBoneHashOffset,
+                self.BoneInfoOffset,
+                self.StreamInfoOffset,
+                self.MeshInfoOffset,
+                self.EndingOffset,
+            )
+            (
+                self._has_lod_group_list_section,
+                self.UnreversedPreLODGroupListData,
+                self.UnreversedLODGroupListData,
+            ) = _read_optional_lod_group_region(
+                f,
+                self.UnreversedLODGroupListDataOffset,
+                following,
+            )
+        else:
+            self.UnreversedLODGroupListDataOffset = (
+                _write_optional_lod_group_region(
+                    f,
+                    self._has_lod_group_list_section,
+                    self.UnreversedPreLODGroupListData,
+                    self.UnreversedLODGroupListData,
+                )
+            )
+
+        if self.TransformInfoOffset > 0:
+            if f.IsReading():
+                f.seek(self.TransformInfoOffset)
+            else:
+                self.TransformInfoOffset = f.tell()
             self.TransformInfo.Serialize(f)
             if f.tell() % 16 != 0:
-                f.seek(f.tell() + (16-f.tell()%16))
-            UnreversedCustomizationData_Start = f.tell()
-            if self.CustomizationInfoOffset > 0:
-                self.CustomizationInfoOffset = UnreversedCustomizationData_Start
-            if f.IsReading():
-                if self.ConnectingBoneHashOffset > 0:
-                    UnreversedCustomizationData_Size = self.ConnectingBoneHashOffset - f.tell()
-                elif self.BoneInfoOffset > 0:
-                    UnreversedCustomizationData_Size = self.BoneInfoOffset-f.tell()
-                elif self.StreamInfoOffset > 0:
-                    UnreversedCustomizationData_Size = self.StreamInfoOffset-f.tell()
-                elif self.MeshInfoOffset > 0:
-                    UnreversedCustomizationData_Size = self.MeshInfoOffset-f.tell()
-            else:
-                UnreversedCustomizationData_Size = len(self.UnreversedCustomizationData)
-            f.seek(loc)
+                f.seek(f.tell() + (16 - f.tell() % 16))
 
-        # Unreversed data before transform info offset (may include customization info)
-        # Unreversed data intersects other data we want to leave alone!
-        if f.IsReading():
-            if self.TransformInfoOffset > 0:
-                UnreversedData1Size = self.TransformInfoOffset - f.tell()
-            elif self.ConnectingBoneHashOffset > 0:
-                UnreversedData1Size = self.ConnectingBoneHashOffset - f.tell()
-            elif self.BoneInfoOffset > 0:
-                UnreversedData1Size = self.BoneInfoOffset-f.tell()
-            elif self.StreamInfoOffset > 0:
-                UnreversedData1Size = self.StreamInfoOffset-f.tell()
-            elif self.MeshInfoOffset > 0:
-                UnreversedData1Size = self.MeshInfoOffset-f.tell()
-        else: UnreversedData1Size = len(self.UnReversedData1)
-        try:
-            self.UnReversedData1    = f.bytes(self.UnReversedData1, UnreversedData1Size)
-        except:
-            PrettyPrint(f"Could not set UnReversedData1", "ERROR")
-        
-        if self.TransformInfoOffset > 0: # if not transform info, this data is contained within UnReversedData1
-            f.seek(UnreversedCustomizationData_Start)
-            if UnreversedCustomizationData_Size > 0:
-                self.UnreversedCustomizationData = f.bytes(self.UnreversedCustomizationData, UnreversedCustomizationData_Size)
-                
+        if self.CustomizationInfoOffset > 0:
+            if f.IsReading():
+                f.seek(self.CustomizationInfoOffset)
+                following = [
+                    offset
+                    for offset in (
+                        self.UnkHeaderOffset1,
+                        self.ConnectingBoneHashOffset,
+                        self.BoneInfoOffset,
+                        self.StreamInfoOffset,
+                        self.MeshInfoOffset,
+                    )
+                    if offset > f.tell()
+                ]
+                data_size = min(following) - f.tell() if following else 0
+            else:
+                self.CustomizationInfoOffset = f.tell()
+                data_size = len(self.UnreversedCustomizationData)
+            self.UnreversedCustomizationData = f.bytes(
+                self.UnreversedCustomizationData, data_size
+            )
+
+        if self.UnkHeaderOffset1 > 0:
+            if f.IsReading():
+                f.seek(self.UnkHeaderOffset1)
+                following = [
+                    offset
+                    for offset in (
+                        self.ConnectingBoneHashOffset,
+                        self.BoneInfoOffset,
+                        self.StreamInfoOffset,
+                        self.MeshInfoOffset,
+                    )
+                    if offset > f.tell()
+                ]
+                data_size = min(following) - f.tell() if following else 0
+            else:
+                self.UnkHeaderOffset1 = f.tell()
+                data_size = len(self.UnkHeaderData1)
+            self.UnkHeaderData1 = f.bytes(self.UnkHeaderData1, data_size)
+
         # ConnectingBoneHash Data
         if self.ConnectingBoneHashOffset > 0:
             if self.BoneInfoOffset > 0:
@@ -228,7 +425,7 @@ class StingrayMeshFile:
                 self.BoneInfoOffsets[boneinfo_idx] = f.tell() - self.BoneInfoOffset
             self.BoneInfoArray[boneinfo_idx] = self.BoneInfoArray[boneinfo_idx].Serialize(f, end_offset)
             # Bone Hash linking
-            # if f.IsReading(): 
+            # if f.IsReading():
             #     PrettyPrint("Hashes")
             #     PrettyPrint(f"Length of bone names: {len(self.BoneNames)}")
             #     HashOffset = self.CustomizationInfoOffset - ((len(self.BoneNames) - 1) * 4) # this is a bad work around as we can't always get the bone names since some meshes don't have a bone file listed
@@ -289,7 +486,7 @@ class StingrayMeshFile:
             if f.IsReading(): f.seek(self.MeshInfoOffset+self.MeshInfoOffsets[mesh_idx])
             else            : self.MeshInfoOffsets[mesh_idx] = f.tell() - self.MeshInfoOffset
             self.MeshInfoArray[mesh_idx] = self.MeshInfoArray[mesh_idx].Serialize(f)
-            
+
         # Get geometry group
         if f.IsReading() and self.CompositeRef != 0:
             Entry = Global_TocManager.GetEntry(self.CompositeRef, CompositeUnitID)
@@ -473,7 +670,17 @@ class StingrayMeshFile:
             MainSection = Mesh_Info.Sections[0]
             # get vertices
             if gpu.IsReading(): gpu.seek(Stream_Info.VertexBufferOffset + (MainSection.VertexOffset*Stream_Info.VertexStride))
-            
+            if gpu.IsReading() and mesh.IsCullingBody():
+                start = gpu.tell()
+                mesh.DEV_NativeVertexBytes = gpu.read(len(mesh.VertexPositions) * Stream_Info.VertexStride)
+                gpu.seek(start)
+                mesh.DEV_NativeComponents = deepcopy(Stream_Info.Components)
+                mesh.DEV_NativeStride = Stream_Info.VertexStride
+            if gpu.IsWriting() and getattr(mesh, "DEV_PreserveNativeStream", False):
+                gpu.write(mesh.DEV_NativeVertexBytes)
+                VertexOffset += len(mesh.VertexPositions)
+                continue
+
             for vidx in range(len(mesh.VertexPositions)):
                 if gpu.IsReading():
                     pass
@@ -484,13 +691,15 @@ class StingrayMeshFile:
                     serialize_func(gpu, mesh, Component, vidx)
 
                 gpu.seek(vstart + Stream_Info.VertexStride)
+            if gpu.IsReading() and mesh.IsCullingBody():
+                mesh.DEV_NativeVertexSnapshot = deepcopy(mesh.NativeVertexSnapshot())
             VertexOffset += len(mesh.VertexPositions)
         # update stream info
         if gpu.IsWriting():
             gpu.seek(ceil(float(gpu.tell())/16)*16)
             Stream_Info.VertexBufferSize    = gpu.tell() - Stream_Info.VertexBufferOffset
             Stream_Info.NumVertices         = VertexOffset
-            
+
     def CreateOrderedMeshList(self):
         # re-order the meshes to match the vertex order (this is mainly for writing)
         meshes_ordered_by_vert = [
@@ -529,7 +738,9 @@ class StingrayMeshFile:
             Stream_Info = self.StreamInfoArray[Mesh_Info.StreamIndex]
             NewMesh.MeshInfoIndex = n
             NewMesh.MeshID = Mesh_Info.MeshID
-            NewMesh.DEV_Transform = self.TransformInfo.Transforms[Mesh_Info.TransformIndex]
+            group_transform = self.TransformInfo.TransformMatrices[Mesh_Info.TransformIndex]
+            NewMesh.DEV_Transform = group_transform.ToBlenderMatrix()
+
             try:
                 NewMesh.DEV_BoneInfo  = self.BoneInfoArray[Mesh_Info.LodIndex]
             except: pass
@@ -542,7 +753,7 @@ class StingrayMeshFile:
                     numBoneIndices += 1
             NewMesh.InitBlank(Mesh_Info.GetNumVertices(), Mesh_Info.GetNumIndices(), numUVs, numBoneIndices)
             self.RawMeshes.append(NewMesh)
-    
+
     def ReInitRawMeshVerts(self, mesh):
         # for mesh in self.RawMeshes:
         Mesh_Info = self.MeshInfoArray[self.DEV_MeshInfoMap[mesh.MeshInfoIndex]]
@@ -551,6 +762,23 @@ class StingrayMeshFile:
     def SetupRawMeshComponents(self, OrderedMeshes):
         for stream_idx in range(len(OrderedMeshes)):
             Stream_Info = self.StreamInfoArray[stream_idx]
+
+            # Culling helpers are not authored render meshes. Preserve their
+            # opaque native stream (including scalar 0/1 weights and auxiliary
+            # index encodings) only while every decoded attribute is unchanged.
+            native_meshes = OrderedMeshes[stream_idx][0]
+            for native_mesh in native_meshes:
+                native_mesh.DEV_PreserveNativeStream = False
+            if native_meshes and all(mesh.CanPreserveNativeStream() for mesh in native_meshes):
+                first = native_meshes[0]
+                schema = lambda mesh: (mesh.DEV_NativeStride, [
+                    (c.Type, c.Format, c.Index, c.Unknown) for c in mesh.DEV_NativeComponents])
+                if all(schema(mesh) == schema(first) for mesh in native_meshes):
+                    Stream_Info.Components = deepcopy(first.DEV_NativeComponents)
+                    Stream_Info.VertexStride = first.DEV_NativeStride
+                    for mesh in native_meshes:
+                        mesh.DEV_PreserveNativeStream = True
+                    continue
 
             HasPositions = False
             HasNormals   = False
@@ -613,7 +841,7 @@ class StingrayMeshFile:
             Stream_Info.VertexStride = 0
             for Component in Stream_Info.Components:
                 Stream_Info.VertexStride += Component.GetSize()
-            
+
 
 class BoneInfo:
     def __init__(self):
@@ -627,7 +855,7 @@ class BoneInfo:
 
     def Serialize_REAL(self, f: MemoryStream): # still need to figure out whats up with the unknown bit
         RelPosition = f.tell()
-        
+
         self.NumBones       = f.uint32(self.NumBones)
         self.MatrixOffset           = f.uint32(self.MatrixOffset) # matrix pointer
         self.RealIndicesOffset = f.uint32(self.RealIndicesOffset) # unit indices
@@ -678,10 +906,10 @@ class BoneInfo:
     def GetRealIndex(self, bone_index, material_index=0):
         FakeIndex = self.Remaps[material_index][bone_index]
         return self.RealIndices[FakeIndex]
-        
+
     def GetRemappedIndex(self, bone_index, material_index=0):
         return self.Remaps[material_index].index(self.RealIndices.index(bone_index))
-        
+
     def SetRemap(self, remap_info: list[list[str]], transform_info):
         # remap_info is a list of bones indexed by material
         # so the list of bones for material slot 0 is covered by remap_info[0]
@@ -716,12 +944,14 @@ class BoneInfo:
                     self.RemapCounts[i] += 1
                     self.NumBones += 1
                     self.Bones.append(None)
-                    
+
             self.Remaps.append(r)
-            
+
         for i in range(1, self.NumRemaps):
-            self.RemapOffsets.append(self.RemapOffsets[i-1]+4*self.RemapCounts[i])
-            
+            self.RemapOffsets.append(
+                self.RemapOffsets[i-1] + 4*self.RemapCounts[i-1]
+            )
+
 class StreamInfo:
     def __init__(self):
         self.Components = []
@@ -893,7 +1123,7 @@ class StingrayMatrix3x3: # Matrix3x3: https://help.autodesk.com/cloudhelp/ENU/St
             qz = (self.y[0] + self.x[1]) / (4*qmax)
             qw = qmax
         return [qx, qy, qz, qw]
-    
+
 class StingrayLocalTransform: # Stingray Local Transform: https://help.autodesk.com/cloudhelp/ENU/Stingray-SDK-Help/engine_c/plugin__api__types_8h.html#line_100
     def __init__(self):
         self.rot   = StingrayMatrix3x3()
@@ -972,7 +1202,7 @@ class CustomizationInfo: # READ ONLY
             pass # tehee
 
 class StreamComponentInfo:
-    
+
     def __init__(self, type="position", format="float", devUnitVersion=0):
         self.DEVUnitVersion = devUnitVersion
         self.Type   = self.TypeFromName(type)
@@ -1019,10 +1249,10 @@ class StreamComponentInfo:
         elif name == "unk_normal":  format = 30
         elif name == "vec2_half":   format = 33
         elif name == "vec4_half":   format = 35
-        if self.DEVUnitVersion == 10800437 and format > 16: format -= 4 # quick and dirty fix for format changes in newer versions of the unit file, this is really gross and should be fixed properly at some point 
+        if self.DEVUnitVersion in [10800437, 10800436, 1] and format > 16: format -= 4 # quick and dirty fix for format changes in newer versions of the unit file, this is really gross and should be fixed properly at some point
         return format
     def GetSize(self):
-        if self.DEVUnitVersion == 10800437:
+        if self.DEVUnitVersion in [10800437, 10800436, 1]:
                 if   self.Format == 0:  return 4
                 elif self.Format == 1:  return 8
                 elif self.Format == 2:  return 12
@@ -1049,7 +1279,7 @@ class StreamComponentInfo:
         raise Exception("Cannot get size of unknown vertex format: "+str(self.Format))
     def SerializeComponent(self, f: MemoryStream, value):
         try:
-            if self.DEVUnitVersion == 10800437:
+            if self.DEVUnitVersion in [10800437, 10800436, 1]:
                 serialize_func = FUNCTION_LUTS.SERIALIZE_COMPONENT_LUT_OLD_UNITS[self.Format]
             else:
                 serialize_func = FUNCTION_LUTS.SERIALIZE_COMPONENT_LUT[self.Format]
@@ -1058,6 +1288,17 @@ class StreamComponentInfo:
             raise Exception("Cannot serialize unknown vertex format: "+str(self.Format))
 
 class RawMeshClass:
+    def NativeVertexSnapshot(self):
+        return tuple(getattr(self, field) for field in (
+            "VertexPositions", "VertexNormals", "VertexTangents", "VertexBiTangents",
+            "VertexUVs", "VertexColors", "VertexBoneIndices", "VertexWeights"))
+
+    def CanPreserveNativeStream(self):
+        return (self.IsCullingBody()
+                and hasattr(self, "DEV_NativeVertexSnapshot")
+                and self.NativeVertexSnapshot() == self.DEV_NativeVertexSnapshot
+                and len(self.DEV_NativeVertexBytes) == len(self.VertexPositions) * self.DEV_NativeStride)
+
     def __init__(self):
         self.MeshInfoIndex = 0
         self.VertexPositions  = []
@@ -1107,7 +1348,7 @@ class RawMeshClass:
             self.VertexUVs.append([[0,0] for n in range(numVertices)])
         for idx in range(numBoneIndices):
             self.VertexBoneIndices.append([[0,0,0,0] for n in range(numVertices)])
-    
+
     def ReInitVerts(self, numVertices):
         self.VertexPositions    = [[0,0,0] for n in range(numVertices)]
         self.VertexNormals      = [[0,0,0] for n in range(numVertices)]
@@ -1144,40 +1385,80 @@ class RawMaterialClass:
                 try:
                     self.ShortID = Global_MaterialSlotNames[unit_id][self.MatID][index]
                 except (KeyError, IndexError):
-                    PrettyPrint(f"Unable to find material slot for material {name} with material count {index} for unit {unit_id}, using random material slot name")
-                    self.ShortID = random.randint(1, 0xffffffff)
+                    # Custom materials are not present in the target Unit's
+                    # original material-slot table.  The old fallback generated
+                    # a fresh random section ID on every save, so byte-identical
+                    # authoring input produced different Unit metadata.  Use a
+                    # stable synthetic slot name and avoid collisions with the
+                    # target Unit's known slots instead.
+                    reserved = {
+                        int(slot)
+                        for slots in Global_MaterialSlotNames.get(unit_id, {}).values()
+                        for slot in slots
+                    }
+                    salt = 0
+                    while True:
+                        key = (
+                            f"HD2SDK_CustomMaterialSlot:{unit_id}:"
+                            f"{self.MatID}:{index}:{salt}"
+                        )
+                        candidate = murmur32_hash(key.encode("utf-8"))
+                        if (
+                            candidate not in (0, self.DefaultMaterialShortID)
+                            and candidate not in reserved
+                        ):
+                            break
+                        salt += 1
+                    self.ShortID = candidate
+                    PrettyPrint(
+                        f"Unable to find original material slot for material {name} "
+                        f"index {index} in unit {unit_id}; using deterministic "
+                        f"custom slot {self.ShortID}"
+                    )
             except:
                 raise Exception("Material name must be a number")
 
 class BoneIndexException(Exception):
     pass
-    
+
 class LightList:
-    
+
     def __init__(self):
         self.lights = []
         self.light_count = 0
         self.unk0 = [0, 0, 0]
-        
-    def Serialize(self, stream: MemoryStream):
+
+    def Serialize(self, stream: MemoryStream, end_offset=None):
+        if stream.IsWriting():
+            self.light_count = len(self.lights)
         self.light_count = stream.uint32(self.light_count)
         self.unk0 = [stream.uint32(i) for i in self.unk0]
         if stream.IsReading():
+            section_end = len(stream.Data) if end_offset is None else end_offset
+            if section_end < stream.tell() or section_end > len(stream.Data):
+                raise ValueError("HD2 Light table end offset is invalid")
+            available_records = (section_end - stream.tell()) // 112
+            if self.light_count > available_records:
+                raise ValueError(
+                    f"HD2 Light 表声明 {self.light_count} 条记录，但剩余数据最多容纳 "
+                    f"{available_records} 条"
+                )
             self.lights = [Light() for _ in range(self.light_count)]
         for light in self.lights:
             light.Serialize(stream)
-    
+
 class Light:
-    
+
     OMNI = 0 # point in Blender
     SPOT = 1 # spot
     BOX = 2 # area?
     DIRECTIONAL = 3 # sun
-    
+
     CAST_SHADOW = 0x1
     DISABLED = 0x2
     INDIRECT_LIGHTING = 0x4
     VOLUMETRIC_FOG = 0x10
+    DIRECT_LIGHTING = 0x40
 
     def __init__(self):
         self.name_hash = self.bone_index = self.falloff_start = self.falloff_end = self.start_angle = self.end_angle = self.unk0 = self.flags = self.light_type = 0
@@ -1186,7 +1467,7 @@ class Light:
         self.unk1 = [0] * 5
         self.unk2 = bytearray(32)
         self.color = [0, 0, 0]
-        
+
     def Serialize(self, stream: MemoryStream):
         self.name_hash = stream.uint32(self.name_hash)
         self.bone_index = stream.uint32(self.bone_index)
@@ -1240,14 +1521,16 @@ def encode_packed_oct_norm(x, y, z):
     return int((x+1)*(1023.0/2.0)) | (int((y+1)*(1023.0/2.0)) << 10)
 
 class SerializeFunctions:
-    
+
     def SerializePositionComponent(gpu, mesh, component, vidx):
         mesh.VertexPositions[vidx] = component.SerializeComponent(gpu, mesh.VertexPositions[vidx])
-    
+
     def SerializeNormalComponent(gpu, mesh, component, vidx):
         if gpu.IsReading():
             norm = component.SerializeComponent(gpu, mesh.VertexNormals[vidx])
             if not isinstance(norm, int):
+                while len(norm) < 3:
+                    norm.append(0.0)
                 norm = list(mathutils.Vector((norm[0],norm[1],norm[2])).normalized())
                 mesh.VertexNormals[vidx] = norm[:3]
             else:
@@ -1255,45 +1538,52 @@ class SerializeFunctions:
         else:
             norm = encode_packed_oct_norm(*mathutils.Vector(mesh.VertexNormals[vidx]).normalized().to_tuple())
             norm = component.SerializeComponent(gpu, norm)
-    
+
     def SerializeTangentComponent(gpu, mesh, component, vidx):
         mesh.VertexTangents[vidx] = component.SerializeComponent(gpu, mesh.VertexTangents[vidx])
-    
+
     def SerializeBiTangentComponent(gpu, mesh, component, vidx):
         mesh.VertexBiTangents[vidx] = component.SerializeComponent(gpu, mesh.VertexBiTangents[vidx])
-    
+
     def SerializeUVComponent(gpu, mesh, component, vidx):
         mesh.VertexUVs[component.Index][vidx] = component.SerializeComponent(gpu, mesh.VertexUVs[component.Index][vidx])
-    
+
     def SerializeColorComponent(gpu, mesh, component, vidx):
         mesh.VertexColors[vidx] = component.SerializeComponent(gpu, mesh.VertexColors[vidx])
-    
+
     def SerializeBoneIndexComponent(gpu, mesh, component, vidx):
         try:
              mesh.VertexBoneIndices[component.Index][vidx] = component.SerializeComponent(gpu, mesh.VertexBoneIndices[component.Index][vidx])
         except:
             raise BoneIndexException(f"Vertex bone index out of range. Component index: {component.Index} vidx: {vidx}")
-    
+
     def SerializeBoneWeightComponent(gpu, mesh, component, vidx):
         if component.Index > 0: # TODO: add support for this (check archive 9102938b4b2aef9d)
             PrettyPrint("Multiple weight indices are unsupported!", "warn")
             gpu.seek(gpu.tell()+component.GetSize())
         else:
-            mesh.VertexWeights[vidx] = component.SerializeComponent(gpu, mesh.VertexWeights[vidx])
-            
-            
+            weight = mesh.VertexWeights[vidx]
+            # Native culling meshes can store one scalar influence. Rebuilt
+            # streams use vec4_half: pad that influence, do not broadcast it
+            # through the generic vector serializer (1 -> [1, 1, 1, 1]).
+            if (not gpu.IsReading() and isinstance(weight, (int, float))
+                    and component.Format == component.FormatFromName("vec4_half")):
+                weight = [weight, 0.0, 0.0, 0.0]
+            mesh.VertexWeights[vidx] = component.SerializeComponent(gpu, weight)
+
+
     def SerializeFloatComponent(f: MemoryStream, value):
         return f.float32(value)
-        
+
     def SerializeVec2FloatComponent(f: MemoryStream, value):
         return f.vec2_float(value)
-        
+
     def SerializeVec3FloatComponent(f: MemoryStream, value):
         return f.vec3_float(value)
-        
+
     def SerializeVec4FloatComponent(f: MemoryStream, value):
         return f.vec4_float(value)
-    
+
     def SerializeRGBA8888Component(f: MemoryStream, value):
         if f.IsReading():
             value = f.vec4_uint8([0,0,0,0])
@@ -1308,31 +1598,31 @@ class SerializeFunctions:
             a = min(255, int(value[3]*255))
             value = f.vec4_uint8([r,g,b,a])
         return value
-      
+
     def SerializeUint32Component(f: MemoryStream, value):
         return f.uint32(value)
 
     def SerializeVec2Uint32Component(f: MemoryStream, value):
         return f.vec2_uint32(value)
-    
+
     def SerializeVec3Uint32Component(f: MemoryStream, value):
         return f.vec3_uint32(value)
-  
+
     def SerializeVec4Uint32Component(f: MemoryStream, value):
         return f.vec4_uint32(value)
-        
-    def SerializeInt8Component(f: MemoryStream, value):
-        return f.int8(value)
 
-    def SerializeVec2Int8Component(f: MemoryStream, value):
-        return f.vec2_int8(value)
+    def SerializeUint8Component(f: MemoryStream, value):
+        return f.uint8(value)
 
-    def SerializeVec3Int8Component(f: MemoryStream, value):
-        return f.vec3_int8(value)
+    def SerializeVec2Uint8Component(f: MemoryStream, value):
+        return f.vec2_uint8(value)
 
-    def SerializeVec4Int8Component(f: MemoryStream, value):
-        return f.vec4_int8(value)
-        
+    def SerializeVec3Uint8Component(f: MemoryStream, value):
+        return f.vec3_uint8(value)
+
+    def SerializeVec4Uint8Component(f: MemoryStream, value):
+        return f.vec4_uint8(value)
+
     def SerializeVec41010102Component(f: MemoryStream, value):
         if f.IsReading():
             value = TenBitUnsigned(f.uint32(0))
@@ -1340,32 +1630,28 @@ class SerializeFunctions:
         else:
             f.uint32(MakeTenBitUnsigned(value))
         return value
-        
+
     def SerializeUnkNormalComponent(f: MemoryStream, value):
         if isinstance(value, int):
             return f.uint32(value)
         else:
             return f.uint32(0)
-            
+
     def SerializeFloat16Component(f: MemoryStream, value):
         return f.float16(value)
-    
+
     def SerializeVec2HalfComponent(f: MemoryStream, value):
         return f.vec2_half(value)
 
     def SerializeVec3HalfComponent(f: MemoryStream, value):
         return f.vec3_half(value)
-    
-        
-    def SerializeVec3HalfComponent(f: MemoryStream, value):
-        return f.vec3_half(value)
-    
+
     def SerializeVec4HalfComponent(f: MemoryStream, value):
         if isinstance(value, float):
             return f.vec4_half([value,value,value,value])
         else:
             return f.vec4_half(value)
-            
+
     def SerializeUnknownComponent(f: MemoryStream, value):
         raise Exception("Cannot serialize unknown vertex format!")
 
@@ -1379,7 +1665,7 @@ class StreamComponentType:
     BONE_INDEX = 6
     BONE_WEIGHT = 7
     UNKNOWN_TYPE = -1
-    
+
 class StreamComponentFormat:
     FLOAT = 0
     VEC2_FLOAT = 1
@@ -1390,10 +1676,10 @@ class StreamComponentFormat:
     VEC2_UINT32 = 22
     VEC3_UINT32 = 23
     VEC4_UINT32 = 24
-    INT8 = 25
-    VEC2_INT8 = 26
-    VEC3_INT8 = 27
-    VEC4_INT8 = 28
+    UINT8 = 25
+    VEC2_UINT8 = 26
+    VEC3_UINT8 = 27
+    VEC4_UINT8 = 28
     VEC4_1010102 = 29
     UNK_NORMAL = 30
     FLOAT16 = 32
@@ -1412,10 +1698,10 @@ class StreamComponentFormat_OLD_UNITS:
     VEC2_UINT32 = 18
     VEC3_UINT32 = 19
     VEC4_UINT32 = 20
-    INT8 = 21
-    VEC2_INT8 = 22
-    VEC3_INT8 = 23
-    VEC4_INT8 = 24
+    UINT8 = 21
+    VEC2_UINT8 = 22
+    VEC3_UINT8 = 23
+    VEC4_UINT8 = 24
     VEC4_1010102 = 25
     UNK_NORMAL = 26
     FLOAT16 = 28
@@ -1425,7 +1711,7 @@ class StreamComponentFormat_OLD_UNITS:
     UNKNOWN_TYPE = -1
 
 class FUNCTION_LUTS:
-    
+
     SERIALIZE_MESH_LUT = {
         StreamComponentType.POSITION: SerializeFunctions.SerializePositionComponent,
         StreamComponentType.NORMAL: SerializeFunctions.SerializeNormalComponent,
@@ -1436,7 +1722,7 @@ class FUNCTION_LUTS:
         StreamComponentType.BONE_INDEX: SerializeFunctions.SerializeBoneIndexComponent,
         StreamComponentType.BONE_WEIGHT: SerializeFunctions.SerializeBoneWeightComponent
     }
-    
+
     SERIALIZE_COMPONENT_LUT = {
         StreamComponentFormat.FLOAT: SerializeFunctions.SerializeFloatComponent,
         StreamComponentFormat.VEC2_FLOAT: SerializeFunctions.SerializeVec2FloatComponent,
@@ -1447,10 +1733,10 @@ class FUNCTION_LUTS:
         StreamComponentFormat.VEC2_UINT32: SerializeFunctions.SerializeVec2Uint32Component,
         StreamComponentFormat.VEC3_UINT32: SerializeFunctions.SerializeVec3Uint32Component,
         StreamComponentFormat.VEC4_UINT32: SerializeFunctions.SerializeVec4Uint32Component,
-        StreamComponentFormat.INT8: SerializeFunctions.SerializeInt8Component,
-        StreamComponentFormat.VEC2_INT8: SerializeFunctions.SerializeVec2Int8Component,
-        StreamComponentFormat.VEC3_INT8: SerializeFunctions.SerializeVec3Int8Component,
-        StreamComponentFormat.VEC4_INT8: SerializeFunctions.SerializeVec4Int8Component,
+        StreamComponentFormat.UINT8: SerializeFunctions.SerializeUint8Component,
+        StreamComponentFormat.VEC2_UINT8: SerializeFunctions.SerializeVec2Uint8Component,
+        StreamComponentFormat.VEC3_UINT8: SerializeFunctions.SerializeVec3Uint8Component,
+        StreamComponentFormat.VEC4_UINT8: SerializeFunctions.SerializeVec4Uint8Component,
         StreamComponentFormat.VEC4_1010102: SerializeFunctions.SerializeVec41010102Component,
         StreamComponentFormat.UNK_NORMAL: SerializeFunctions.SerializeUnkNormalComponent,
         StreamComponentFormat.FLOAT16: SerializeFunctions.SerializeFloat16Component,
@@ -1458,7 +1744,7 @@ class FUNCTION_LUTS:
         StreamComponentFormat.VEC3_HALF: SerializeFunctions.SerializeVec3HalfComponent,
         StreamComponentFormat.VEC4_HALF: SerializeFunctions.SerializeVec4HalfComponent
     }
-    
+
     SERIALIZE_COMPONENT_LUT_OLD_UNITS = {
         StreamComponentFormat_OLD_UNITS.FLOAT: SerializeFunctions.SerializeFloatComponent,
         StreamComponentFormat_OLD_UNITS.VEC2_FLOAT: SerializeFunctions.SerializeVec2FloatComponent,
@@ -1469,10 +1755,10 @@ class FUNCTION_LUTS:
         StreamComponentFormat_OLD_UNITS.VEC2_UINT32: SerializeFunctions.SerializeVec2Uint32Component,
         StreamComponentFormat_OLD_UNITS.VEC3_UINT32: SerializeFunctions.SerializeVec3Uint32Component,
         StreamComponentFormat_OLD_UNITS.VEC4_UINT32: SerializeFunctions.SerializeVec4Uint32Component,
-        StreamComponentFormat_OLD_UNITS.INT8: SerializeFunctions.SerializeInt8Component,
-        StreamComponentFormat_OLD_UNITS.VEC2_INT8: SerializeFunctions.SerializeVec2Int8Component,
-        StreamComponentFormat_OLD_UNITS.VEC3_INT8: SerializeFunctions.SerializeVec3Int8Component,
-        StreamComponentFormat_OLD_UNITS.VEC4_INT8: SerializeFunctions.SerializeVec4Int8Component,
+        StreamComponentFormat_OLD_UNITS.UINT8: SerializeFunctions.SerializeUint8Component,
+        StreamComponentFormat_OLD_UNITS.VEC2_UINT8: SerializeFunctions.SerializeVec2Uint8Component,
+        StreamComponentFormat_OLD_UNITS.VEC3_UINT8: SerializeFunctions.SerializeVec3Uint8Component,
+        StreamComponentFormat_OLD_UNITS.VEC4_UINT8: SerializeFunctions.SerializeVec4Uint8Component,
         StreamComponentFormat_OLD_UNITS.VEC4_1010102: SerializeFunctions.SerializeVec41010102Component,
         StreamComponentFormat_OLD_UNITS.UNK_NORMAL: SerializeFunctions.SerializeUnkNormalComponent,
         StreamComponentFormat_OLD_UNITS.FLOAT16: SerializeFunctions.SerializeFloat16Component,
@@ -1481,7 +1767,7 @@ class FUNCTION_LUTS:
         StreamComponentFormat_OLD_UNITS.VEC4_HALF: SerializeFunctions.SerializeVec4HalfComponent
     }
 
-    
+
 def duplicate(obj, data=True, actions=True, collection=None):
     obj_copy = obj.copy()
     if data:
@@ -1493,9 +1779,19 @@ def duplicate(obj, data=True, actions=True, collection=None):
     return obj_copy
 
 def PrepareMesh(og_object):
+    if og_object.data.shape_keys is not None:
+        raise ValueError(f"网格“{og_object.name}”仍有形态键，请先手动删除形态键后再保存")
     object = duplicate(og_object)
     bpy.ops.object.select_all(action='DESELECT')
     bpy.context.view_layer.objects.active = object
+    if og_object.get("HD2SDK_IndependentExportBonesOnly", False):
+        # Independent export resolves weights and bind matrices itself.  Keeping
+        # the Armature modifier ahead of the temporary normal/triangulate
+        # modifiers can make Blender apply evaluated (already skinned) geometry
+        # and then serialize skinning a second time.
+        for modifier in list(object.modifiers):
+            if modifier.type == 'ARMATURE':
+                object.modifiers.remove(modifier)
     # split UV seams
     try:
         bpy.ops.object.mode_set(mode='EDIT')
@@ -1524,7 +1820,7 @@ def PrepareMesh(og_object):
     bpy.context.object.modifiers[modifier.name].use_loop_data = True
     bpy.context.object.modifiers[modifier.name].loop_mapping = 'TOPOLOGY'
     bpy.ops.object.modifier_apply(modifier=modifier.name)
-    
+
     # triangulate
     modifier = object.modifiers.new("EXPORT_TRIANGULATE", 'TRIANGULATE')
     bpy.context.object.modifiers[modifier.name].keep_custom_normals = True
@@ -1533,13 +1829,504 @@ def PrepareMesh(og_object):
     # adjust weights
     bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
     try:
-        bpy.ops.object.vertex_group_normalize_all(lock_active=False)
         bpy.ops.object.vertex_group_limit_total(group_select_mode='ALL', limit=4)
+        # Limiting after normalization leaves the removed influences missing
+        # from the total.  Normalize last so every exported skinned vertex has
+        # a complete palette weight.
+        bpy.ops.object.vertex_group_normalize_all(lock_active=False)
     except: pass
 
+    bpy.ops.object.mode_set(mode='OBJECT')
     return object
 
+def compute_bone_name_hash(bone_name):
+    try:
+        return int(bone_name)
+    except ValueError:
+        return murmur32_hash(bone_name.encode("utf-8"))
+
+
+def _strip_blender_numeric_suffix(name):
+    stem, separator, suffix = name.rpartition(".")
+    if separator and len(suffix) == 3 and suffix.isdigit():
+        return stem
+    return name
+
+
+def _light_object_name_hash(light_object):
+    stored_hash = light_object.get(HD2_LIGHT_NAME_HASH_PROP)
+    if stored_hash is not None:
+        try:
+            return int(stored_hash) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            PrettyPrint(
+                f"灯光 {light_object.name} 的 {HD2_LIGHT_NAME_HASH_PROP} 无效，改用名称哈希",
+                "warn",
+            )
+    return compute_bone_name_hash(_strip_blender_numeric_suffix(light_object.name))
+
+
+def _light_unit_key(unit_id):
+    return str(unit_id)
+
+
+def _imported_light_units(armature_object):
+    raw_value = armature_object.get(HD2_LIGHT_IMPORTED_UNITS_PROP, "[]")
+    try:
+        values = json.loads(raw_value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return set()
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values}
+
+
+def _mark_light_unit_imported(armature_object, unit_id):
+    units = _imported_light_units(armature_object)
+    units.add(_light_unit_key(unit_id))
+    armature_object[HD2_LIGHT_IMPORTED_UNITS_PROP] = json.dumps(sorted(units))
+
+
+def _armature_unit_ids(armature_object):
+    unit_ids = set()
+    for candidate in bpy.data.objects:
+        if candidate.type != "MESH" or "Z_ObjectID" not in candidate:
+            continue
+        if any(
+            modifier.type == "ARMATURE" and modifier.object is armature_object
+            for modifier in candidate.modifiers
+        ):
+            unit_ids.add(str(candidate["Z_ObjectID"]))
+    return unit_ids
+
+
+def _light_belongs_to_unit(light_object, unit_id, armature_object):
+    stored_unit = light_object.get(HD2_LIGHT_UNIT_ID_PROP)
+    if stored_unit is not None:
+        return str(stored_unit) == _light_unit_key(unit_id)
+
+    # Legacy scenes did not tag imported lights. Adopting an untagged light is
+    # safe only when this armature is associated with exactly one Unit.
+    unit_ids = _armature_unit_ids(armature_object)
+    return len(unit_ids) == 1 and _light_unit_key(unit_id) in unit_ids
+
+
+def _armature_lights_for_unit(armature_object, unit_id):
+    lights = [
+        child
+        for child in armature_object.children
+        if child.type == "LIGHT"
+        and child.parent is armature_object
+        and child.parent_type == "BONE"
+        and _light_belongs_to_unit(child, unit_id, armature_object)
+    ]
+    return sorted(lights, key=lambda item: (_light_object_name_hash(item), item.name))
+
+
+def _sync_hd2_lights_from_armature(
+    armature_object, transform_info, light_list, unit_id
+):
+    """Write bone-parented Blender lights back to one Unit's HD2 light table."""
+
+    armature_unit_ids = _armature_unit_ids(armature_object)
+    if len(armature_unit_ids) > 1:
+        for child in armature_object.children:
+            if (
+                child.type == "LIGHT"
+                and child.parent_type == "BONE"
+                and child.get(HD2_LIGHT_UNIT_ID_PROP) is None
+            ):
+                PrettyPrint(
+                    f"Merged armature light {child.name} has no {HD2_LIGHT_UNIT_ID_PROP}; "
+                    f"it will not be written to Unit {unit_id}",
+                    "warn",
+                )
+
+    blender_lights = _armature_lights_for_unit(armature_object, unit_id)
+    exact_snapshot = _light_unit_key(unit_id) in _imported_light_units(armature_object)
+    existing_by_hash = {light.name_hash: light for light in light_list.lights}
+    if exact_snapshot:
+        rebuilt_lights = []
+    else:
+        # Old .blend files predate the light import marker. Preserve archive lights
+        # that the old plugin never materialized, while still allowing new lights.
+        rebuilt_lights = list(light_list.lights)
+
+    rebuilt_indices = {light.name_hash: index for index, light in enumerate(rebuilt_lights)}
+    transform_indices = {
+        bone_hash: index for index, bone_hash in enumerate(transform_info.NameHashes)
+    }
+    seen_hashes = set()
+
+    for light_object in blender_lights:
+        light_hash = _light_object_name_hash(light_object)
+        if light_hash in seen_hashes:
+            PrettyPrint(
+                f"Unit {unit_id} 中存在重复 HD2 Light 哈希 {light_hash}，已跳过 {light_object.name}",
+                "warn",
+            )
+            continue
+        seen_hashes.add(light_hash)
+
+        parent_bone = armature_object.data.bones.get(light_object.parent_bone)
+        if parent_bone is None:
+            PrettyPrint(
+                f"灯光 {light_object.name} 引用不存在的父骨 {light_object.parent_bone}，已跳过",
+                "warn",
+            )
+            continue
+        bone_hash = compute_bone_name_hash(parent_bone.name)
+        bone_index = transform_indices.get(bone_hash)
+        if bone_index is None:
+            PrettyPrint(
+                f"灯光 {light_object.name} 的父骨 {parent_bone.name} 不在 Unit {unit_id} 的变换表中，已跳过",
+                "warn",
+            )
+            continue
+
+        target = existing_by_hash.get(light_hash, Light())
+        target.name_hash = light_hash
+        target.bone_index = bone_index
+        blender_light = light_object.data
+        light_type = blender_light.type
+
+        if light_type == "SPOT":
+            target.light_type = Light.SPOT
+            target.falloff_end = blender_light.cutoff_distance
+            target.end_angle = blender_light.spot_size
+        elif light_type == "POINT":
+            target.light_type = Light.OMNI
+            target.falloff_end = blender_light.cutoff_distance
+        elif light_type == "AREA":
+            target.light_type = Light.BOX
+            target.falloff_start = -(blender_light.size / 2.0)
+            target.falloff_end = blender_light.size / 2.0
+            target.falloff_exp = 0.0
+            target.start_angle = -(blender_light.size_y / 2.0)
+            target.end_angle = blender_light.cutoff_distance
+            target.unk0 = blender_light.size_y / 2.0
+        elif light_type == "SUN":
+            target.light_type = Light.DIRECTIONAL
+            target.end_angle = math.pi
+        else:
+            PrettyPrint(
+                f"灯光 {light_object.name} 的 Blender 类型 {light_type} 不受 HD2 支持，已跳过",
+                "warn",
+            )
+            continue
+
+        target.flags &= ~(
+            Light.CAST_SHADOW | Light.VOLUMETRIC_FOG | Light.DIRECT_LIGHTING
+        )
+        if getattr(blender_light, "use_shadow", False):
+            target.flags |= Light.CAST_SHADOW
+        if bool(blender_light.get(HD2_LIGHT_VOLUMETRIC_PROP, False)):
+            target.flags |= Light.VOLUMETRIC_FOG
+        if bool(blender_light.get(HD2_LIGHT_DIRECT_PROP, False)):
+            target.flags |= Light.DIRECT_LIGHTING
+
+        energy = float(blender_light.energy)
+        target.color = [float(component) * energy for component in blender_light.color]
+        light_object[HD2_LIGHT_NAME_HASH_PROP] = str(light_hash)
+        light_object[HD2_LIGHT_UNIT_ID_PROP] = _light_unit_key(unit_id)
+
+        old_index = rebuilt_indices.get(light_hash)
+        if old_index is None:
+            rebuilt_indices[light_hash] = len(rebuilt_lights)
+            rebuilt_lights.append(target)
+        else:
+            rebuilt_lights[old_index] = target
+
+    light_list.lights = rebuilt_lights
+    light_list.light_count = len(rebuilt_lights)
+    return len(rebuilt_lights)
+
+
+def _find_light_parent_bone(armature_object, transform_info, light):
+    if light.bone_index < 0 or light.bone_index >= len(transform_info.NameHashes):
+        return None
+    target_hash = transform_info.NameHashes[light.bone_index]
+    for bone in armature_object.data.bones:
+        if compute_bone_name_hash(bone.name) == target_hash:
+            return bone
+    return None
+
+
+def _configure_blender_light(blender_light, light):
+    color_length = sqrt(sum(float(component) ** 2 for component in light.color))
+    if color_length > 1e-8:
+        blender_light.color = tuple(
+            max(0.0, min(1.0, float(component) / color_length))
+            for component in light.color
+        )
+    else:
+        blender_light.color = (1.0, 1.0, 1.0)
+    blender_light.energy = color_length
+    blender_light.use_shadow = bool(light.flags & Light.CAST_SHADOW)
+    blender_light[HD2_LIGHT_VOLUMETRIC_PROP] = bool(
+        light.flags & Light.VOLUMETRIC_FOG
+    )
+    blender_light[HD2_LIGHT_DIRECT_PROP] = bool(
+        light.flags & Light.DIRECT_LIGHTING
+    )
+    if hasattr(blender_light, "use_custom_distance"):
+        blender_light.use_custom_distance = True
+
+    if light.light_type == Light.SPOT:
+        blender_light.cutoff_distance = light.falloff_end
+        blender_light.spot_size = light.end_angle
+        blender_light.show_cone = True
+    elif light.light_type == Light.OMNI:
+        blender_light.cutoff_distance = light.falloff_end
+    elif light.light_type == Light.BOX:
+        blender_light.shape = "RECTANGLE"
+        blender_light.size = max(0.0, light.falloff_end - light.falloff_start)
+        blender_light.size_y = max(0.0, light.unk0 - light.start_angle)
+        blender_light.cutoff_distance = light.end_angle
+    elif light.light_type == Light.DIRECTIONAL:
+        blender_light.angle = max(0.0, min(math.pi, light.end_angle))
+
+
+def _import_hd2_lights(
+    light_list,
+    armature_object,
+    transform_info,
+    target_collection,
+    unit_id,
+):
+    """Create or refresh this Unit's Blender light objects without duplicates."""
+
+    type_names = {
+        Light.OMNI: "POINT",
+        Light.SPOT: "SPOT",
+        Light.BOX: "AREA",
+        Light.DIRECTIONAL: "SUN",
+    }
+    unit_key = _light_unit_key(unit_id)
+    existing = {}
+    duplicate_objects = []
+    for child in armature_object.children:
+        if child.type != "LIGHT" or not _light_belongs_to_unit(
+            child, unit_id, armature_object
+        ):
+            continue
+        child_hash = _light_object_name_hash(child)
+        if child_hash in existing:
+            duplicate_objects.append(child)
+        else:
+            existing[child_hash] = child
+
+    # Older importer versions could create another object on every reimport.
+    # Equal name hashes cannot be represented twice in one Unit, so retain the
+    # first deterministic object and remove only the duplicate light objects.
+    for duplicate in duplicate_objects:
+        light_data = duplicate.data
+        bpy.data.objects.remove(duplicate, do_unlink=True)
+        if light_data.users == 0:
+            bpy.data.lights.remove(light_data)
+
+    imported_hashes = set()
+    for light in light_list.lights:
+        blender_type = type_names.get(light.light_type)
+        if blender_type is None:
+            PrettyPrint(
+                f"Unit {unit_id} 的灯光 {light.name_hash} 使用未知类型 {light.light_type}，已跳过",
+                "warn",
+            )
+            continue
+        parent_bone = _find_light_parent_bone(armature_object, transform_info, light)
+        if parent_bone is None:
+            PrettyPrint(
+                f"Unit {unit_id} 的灯光 {light.name_hash} 找不到骨索引 {light.bone_index}，已跳过",
+                "warn",
+            )
+            continue
+
+        imported_hashes.add(light.name_hash)
+        light_object = existing.get(light.name_hash)
+        if light_object is None:
+            blender_light = bpy.data.lights.new(str(light.name_hash), blender_type)
+            light_object = bpy.data.objects.new(str(light.name_hash), blender_light)
+            target_collection.objects.link(light_object)
+        elif light_object.data.type != blender_type:
+            previous_data = light_object.data
+            light_object.data = bpy.data.lights.new(str(light.name_hash), blender_type)
+            if previous_data.users == 0:
+                bpy.data.lights.remove(previous_data)
+
+        _configure_blender_light(light_object.data, light)
+        # Store unsigned 32-bit hashes as text: some Blender 4.x builds route
+        # ID-property integers through a signed C int and reject values > 2^31-1.
+        light_object[HD2_LIGHT_NAME_HASH_PROP] = str(light.name_hash)
+        light_object[HD2_LIGHT_UNIT_ID_PROP] = unit_key
+        light_object.lock_rotation = (True, True, True)
+        light_object.lock_location = (True, True, True)
+        light_object.lock_scale = (True, True, True)
+        light_object.parent = armature_object
+        light_object.parent_type = "BONE"
+        light_object.parent_bone = parent_bone.name
+        light_object.matrix_parent_inverse = mathutils.Matrix.Rotation(
+            math.pi / 2.0, 4, "X"
+        )
+
+    # Reimport is a reset for objects previously created by this importer.
+    for child in list(armature_object.children):
+        if child.type != "LIGHT":
+            continue
+        if not _light_belongs_to_unit(child, unit_id, armature_object):
+            continue
+        child_hash = _light_object_name_hash(child)
+        if child_hash in imported_hashes:
+            continue
+        light_data = child.data
+        bpy.data.objects.remove(child, do_unlink=True)
+        if light_data.users == 0:
+            bpy.data.lights.remove(light_data)
+
+    _mark_light_unit_imported(armature_object, unit_id)
+    return len(imported_hashes)
+
+
+ANIMATED_BONE_BASELINE_VERSION = 2
+
+
+def get_or_initialize_animated_bone_baseline(mesh_object, current_hashes):
+    """Return a trustworthy snapshot of the imported Animated membership.
+
+    Version 1 snapshots were written while CreateModel was still constructing
+    and merging armatures. With shared/multi-LOD skeletons that provisional
+    bone table can differ from the final Blender Animated flags, causing a
+    mesh-only first save to look like an animation edit. Migrate those projects
+    by snapshotting the actual current Blender flags once.
+    """
+    baseline_version = int(
+        mesh_object.get("HD2SDK_AnimationStructureBaselineVersion", 0)
+    )
+    stored_hashes = mesh_object.get("HD2SDK_OriginalAnimatedBoneHashes")
+    if baseline_version >= ANIMATED_BONE_BASELINE_VERSION and stored_hashes is not None:
+        try:
+            return [int(value) for value in json.loads(stored_hashes)]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            PrettyPrint(
+                "Invalid Animated bone baseline; rebuilding it from the current armature",
+                "warn"
+            )
+
+    baseline_hashes = list(current_hashes)
+    mesh_object["HD2SDK_OriginalAnimatedBoneHashes"] = json.dumps(baseline_hashes)
+    mesh_object["HD2SDK_AnimationStructureBaselineVersion"] = (
+        ANIMATED_BONE_BASELINE_VERSION
+    )
+    return baseline_hashes
+
+
+def animated_bone_membership_changed(current_hashes, baseline_hashes):
+    """Only Animated membership, never order or Mesh data, is a trigger."""
+    return set(current_hashes) != set(baseline_hashes)
+
+
+def reset_reimported_animated_bones(
+    armature_object, transform_hashes, source_animated_hashes, bone_names
+):
+    """Restore this Unit's existing bones to the reimported source state.
+
+    MergeArmatures intentionally reuses the selected Blender armature. Without
+    this reset, a bone changed to Animated during an earlier edit remains True
+    when the same Unit is imported again, even after the Patch was cleared.
+    Limit the reset to this Unit's Transform hashes so unrelated merged bones
+    and user-created bones are not touched.
+    """
+    source_animated_hashes = set(source_animated_hashes)
+    reset_count = 0
+    for bone_hash in transform_hashes:
+        bone_name = bone_names.get(bone_hash, str(bone_hash))
+        bone = armature_object.data.bones.get(bone_name)
+        if bone is None:
+            continue
+        bone["Animated"] = bone_hash in source_animated_hashes
+        reset_count += 1
+    return reset_count
+
+
+def build_material_bone_remaps(object, mesh):
+    """Build a valid bone palette for each material section."""
+    material_count = len(object.material_slots)
+    if material_count == 0:
+        return [], [5000 for _ in mesh.vertices]
+
+    vertex_materials = [set() for _ in mesh.vertices]
+    for polygon in mesh.polygons:
+        for vertex_index in polygon.vertices:
+            vertex_materials[vertex_index].add(polygon.material_index)
+
+    # Shared vertices carry only one bone-index vector in the vertex buffer, so
+    # every material section using one must have an identical palette.
+    parents = list(range(material_count))
+
+    def find(material_index):
+        while parents[material_index] != material_index:
+            parents[material_index] = parents[parents[material_index]]
+            material_index = parents[material_index]
+        return material_index
+
+    def union(first, second):
+        first_root = find(first)
+        second_root = find(second)
+        if first_root != second_root:
+            parents[second_root] = first_root
+
+    for material_indices in vertex_materials:
+        material_indices = sorted(material_indices)
+        for material_index in material_indices[1:]:
+            union(material_indices[0], material_index)
+
+    used_groups = [set() for _ in range(material_count)]
+    for vertex in mesh.vertices:
+        weighted_groups = [
+            membership.group
+            for membership in vertex.groups
+            if membership.weight > 0.001
+        ][:4]
+        for material_index in vertex_materials[vertex.index]:
+            used_groups[material_index].update(weighted_groups)
+
+    component_groups = {}
+    for material_index, groups in enumerate(used_groups):
+        component_groups.setdefault(find(material_index), set()).update(groups)
+
+    remap_info = []
+    for material_index in range(material_count):
+        groups = component_groups.get(find(material_index), set())
+        bone_names = [
+            vertex_group.name
+            for vertex_group in object.vertex_groups
+            if vertex_group.index in groups
+        ]
+        if len(bone_names) > 256:
+            material_name = object.material_slots[material_index].name
+            raise BoneIndexException(
+                f"Material bone palette exceeds 256 entries for object "
+                f"'{object.name}', material {material_index} ('{material_name}'): "
+                f"{len(bone_names)} used vertex groups. First out-of-range "
+                f"group: '{bone_names[256]}'."
+            )
+        remap_info.append(bone_names)
+
+    vertex_to_material_index = [
+        min(material_indices) if material_indices else 5000
+        for material_indices in vertex_materials
+    ]
+    return remap_info, vertex_to_material_index
+
+
 def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
+    # Reject authoring-only material names before PrepareMesh creates a
+    # disposable mesh or changes Blender mode. A failed save must be retryable.
+    for slot in og_object.material_slots:
+        try:
+            int(slot.name)
+        except (ValueError, TypeError):
+            raise ValueError(f"材质“{slot.name}”尚未映射到游戏材质 ID，请先完成材质设置")
     global Global_palettepath
     object = PrepareMesh(og_object)
     bpy.context.view_layer.objects.active = object
@@ -1570,7 +2357,7 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
     if mesh.vertex_colors:
         color_layer = mesh.vertex_colors.active
         for face in object.data.polygons:
-            if color_layer == None: 
+            if color_layer == None:
                 PrettyPrint(f"{og_object.name} Color Layer does not exist", 'ERROR')
                 break
             for vert_idx, loop_idx in zip(face.vertices, face.loop_indices):
@@ -1579,12 +2366,11 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
 
     # get normals, tangents, bitangents
     #mesh.calc_tangents()
-    # 4.3 compatibility change
-    if bpy.app.version[0] >= 4 and bpy.app.version[1] == 0:
+    if hasattr(mesh, "calc_normals_split"):
         if not mesh.has_custom_normals:
             mesh.create_normals_split()
         mesh.calc_normals_split()
-        
+
     for loop in mesh.loops:
         normals[loop.vertex_index]    = loop.normal.normalized()
         #tangents[loop.vertex_index]   = loop.tangent.normalized()
@@ -1603,19 +2389,29 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
         uvs.append(texCoord)
 
 
-    stingray_mesh_entry = Global_TocManager.GetEntry(int(og_object["Z_ObjectID"]), int(UnitID), IgnorePatch=False, SearchAll=True)
+    unit_id = int(og_object["Z_ObjectID"])
+    stingray_mesh_entry = Global_TocManager.GetEntry(unit_id, int(UnitID), IgnorePatch=False, SearchAll=True)
     if stingray_mesh_entry:
         if not stingray_mesh_entry.IsLoaded: stingray_mesh_entry.Load(True, False)
         stingray_mesh_entry = stingray_mesh_entry.LoadedData
     else:
         raise Exception(f"Unable to get mesh entry {og_object['Z_ObjectID']}")
+
+    # Always keep a pristine archive reference for change detection. The active
+    # Patch may be emptied and rebuilt repeatedly, so its current bone table is
+    # not a reliable baseline for deciding whether automatic animations are
+    # required.
+    source_unit_entry = Global_TocManager.GetEntryFromGameArchive(unit_id, UnitID)
+    if source_unit_entry is None:
+        raise Exception(f"Unable to get original mesh entry {unit_id}")
+    if not source_unit_entry.IsLoaded:
+        source_unit_entry.Load(True, False)
+    source_unit_data = source_unit_entry.LoadedData
     bone_info = stingray_mesh_entry.BoneInfoArray
     transform_info = stingray_mesh_entry.TransformInfo
+    light_list = stingray_mesh_entry.LightList
     lod_index = og_object["BoneInfoIndex"]
     bone_entry = Global_TocManager.GetEntry(stingray_mesh_entry.BonesRef, BoneID, IgnorePatch=False, SearchAll=True)
-    modified_bone_entry = False
-    modified_state_machine = False
-    bone_names = []
     bone_data = None
     state_machine_data = None
     state_machine_entry = Global_TocManager.GetEntry(stingray_mesh_entry.StateMachineRef, StateMachineID, IgnorePatch=False, SearchAll=True)
@@ -1638,7 +2434,7 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                 state_machine_entry.Load()
             state_machine_data = state_machine_entry.LoadedData
 
-        
+
     # get armature object
     prev_obj = bpy.context.view_layer.objects.active
     prev_objs = bpy.context.selected_objects
@@ -1654,30 +2450,271 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
         armature_obj.hide_set(False)
         bpy.context.view_layer.objects.active = armature_obj
         bpy.ops.object.mode_set(mode='EDIT')
-        
-        # check if animated bones list has changed, and if it has, clear all modded animations for this armature
-        # but keep them in the patch
+        export_bones = list(armature_obj.data.edit_bones)
+        animation_export_bones = export_bones
+        if og_object.get("HD2SDK_IndependentExportBonesOnly", False):
+            used_bone_names = {
+                og_object.vertex_groups[membership.group].name
+                for vertex in og_object.data.vertices
+                for membership in vertex.groups
+                if membership.weight > 0.001
+            }
+            # A light can be attached to an otherwise unweighted custom bone.
+            # Keep that bone and all parents in an independent Unit's closure.
+            used_bone_names.update(
+                light_object.parent_bone
+                for light_object in _armature_lights_for_unit(armature_obj, unit_id)
+                if light_object.parent_bone
+            )
+            # A collider or chain endpoint can have no direct mesh weight but
+            # is still required by this particular Unit's physics consumer.
+            physical_names = json.loads(og_object.get("HD2SDK_RequiredPhysicsBones", "[]"))
+            if not isinstance(physical_names, list) or not all(isinstance(n, str) for n in physical_names):
+                raise ValueError("物理骨闭包不是有效骨名列表")
+            for name in physical_names:
+                if armature_obj.data.edit_bones.get(name) is None:
+                    raise ValueError(f"物理项目引用不存在的骨骼：{name}")
+            used_bone_names.update(physical_names)
+            # Rest-only dependencies must not enlarge Animated membership or
+            # trigger automatic animation storage. Keep the former consumer
+            # closure for animation-table/baseline handling below.
+            animation_export_bones = independent_export_bones(
+                armature_obj.data.edit_bones, used_bone_names, "",
+            )
+            # A manually separated body mesh can have no knee/foot/twist
+            # weights. Its runtime IK/grip still needs the same authored public
+            # Rest as the other pieces, not leftover native-reference matrices.
+            # Structural dependencies do not imply skin weights or physics
+            # ownership; unrelated custom chains remain excluded.
+            export_bones = independent_export_bones(
+                armature_obj.data.edit_bones, used_bone_names,
+                og_object.get("HD2BT_PartSlot", ""),
+            )
+        # --- MAKE CHANGES TO ANIMATED BONE DATA ---
         if bone_data:
-            old_bones = sorted(bone_data.BoneHashes)
-            new_bones = sorted([(int(bone.name) if bone.name.isdigit() else murmur32_hash(bone.name.encode("utf-8"))) for bone in armature_obj.data.edit_bones if bone.get('Animated')])
-            if old_bones != new_bones:
-                PrettyPrint("Changes made to animated bones, clearing saved animation data")
+            source_bone_entry = Global_TocManager.GetEntryFromGameArchive(
+                source_unit_data.BonesRef, BoneID
+            )
+            if source_bone_entry is None:
+                raise Exception(f"Unable to get original bone entry {source_unit_data.BonesRef}")
+            if not source_bone_entry.IsLoaded:
+                source_bone_entry.Load(False, False)
+            archive_source_hashes = list(source_bone_entry.LoadedData.BoneHashes)
+
+            animated_bones = [
+                bone for bone in animation_export_bones
+                if bone.get('Animated', False)
+            ]
+            current_animated_hashes = [
+                compute_bone_name_hash(bone.name) for bone in animated_bones
+            ]
+            armature_transform_hashes = {
+                compute_bone_name_hash(bone.name)
+                for bone in animation_export_bones
+            }
+
+            # New imports persist the animation-structure baseline on each mesh
+            # object. It contains only membership (Animated hashes and bone
+            # hashes), never matrices, so moving/rotating/scaling an existing
+            # edit bone cannot trigger automatic animation storage.
+            #
+            # Older .blend files have no reliable import-time snapshot. Capture
+            # their current membership on first use instead of comparing them
+            # with an arbitrary currently loaded Patch, which can falsely turn
+            # a pose-only edit into an Animated-bone change.
+            stored_transform_hashes = og_object.get(
+                "HD2SDK_OriginalTransformHashes"
+            )
+            source_hashes = get_or_initialize_animated_bone_baseline(
+                og_object, current_animated_hashes
+            )
+            if stored_transform_hashes is not None:
+                original_transform_hashes = {
+                    int(value) for value in json.loads(stored_transform_hashes)
+                }
+            else:
+                original_transform_hashes = set(armature_transform_hashes)
+                og_object["HD2SDK_OriginalTransformHashes"] = json.dumps(
+                    list(armature_transform_hashes)
+                )
+
+            bones_by_hash = {
+                compute_bone_name_hash(bone.name): bone for bone in animated_bones
+            }
+            desired_hashes = set(bones_by_hash)
+            old_hashes = list(bone_data.BoneHashes)
+
+            # Original archive order is the stable baseline. Retain selected
+            # original animated bones in that order, then append newly animated
+            # bones in Blender edit-bone order.
+            target_hashes = [
+                bone_hash for bone_hash in source_hashes
+                if bone_hash in desired_hashes
+            ]
+            target_hashes.extend(
+                compute_bone_name_hash(bone.name)
+                for bone in animated_bones
+                if compute_bone_name_hash(bone.name) not in source_hashes
+            )
+            target_names = [bones_by_hash[bone_hash].name for bone_hash in target_hashes]
+
+            animated_bones_changed_from_original = animated_bone_membership_changed(
+                current_animated_hashes, source_hashes
+            )
+            # Automatic animation storage has exactly one trigger: membership
+            # of the Animated bone table changed from the import baseline.
+            # Mesh edits, weights, materials, edit-bone matrices, and ordinary
+            # (non-Animated) custom bones must never create animation entries.
+            animation_structure_changed = animated_bones_changed_from_original
+
+            # A modified skeleton needs a complete set of patch animations. Do
+            # not use the current Patch as the trigger: after the user removes
+            # every stored modification, the same Blender armature must rebuild
+            # those animations from the pristine archive on the next save.
+            patch_animations_incomplete = False
+            if animation_structure_changed and state_machine_data:
+                for animation in state_machine_data.animation_ids:
+                    patch_animation_entry = Global_TocManager.GetPatchEntry_B(
+                        animation, AnimationID
+                    )
+                    if patch_animation_entry is None:
+                        patch_animations_incomplete = True
+                        break
+                    if not patch_animation_entry.IsLoaded:
+                        patch_animation_entry.Load(False, False)
+                    patch_animation = patch_animation_entry.LoadedData
+                    if (
+                        patch_animation.bone_count != len(target_hashes)
+                        or len(patch_animation.initial_bone_states) != len(target_hashes)
+                    ):
+                        patch_animations_incomplete = True
+                        break
+
+            animation_sync_required = animation_structure_changed and (
+                old_hashes != target_hashes or patch_animations_incomplete
+            )
+
+            if not animation_structure_changed:
+                PrettyPrint(
+                    "Animated bone membership matches the import baseline; "
+                    "automatic animation storage skipped"
+                )
+            elif animation_sync_required:
+                PrettyPrint(
+                    "Animation structure differs from the import baseline; ensuring saved "
+                    "animations contain a complete initial pose"
+                )
+
+                # Build every animation in temporary copies first. A failure in
+                # one animation must not leave the active patch half-overwritten.
+                remapped_animation_entries = []
                 if state_machine_data:
                     for animation in state_machine_data.animation_ids:
-                        animation_data = Global_TocManager.GetEntry(animation, AnimationID, IgnorePatch=False, SearchAll=True)
-                        if Global_TocManager.IsInPatch(animation_data):
-                            Global_TocManager.RemoveEntryFromPatch(animation, AnimationID)
-                        Global_TocManager.AddEntryToPatch(animation, AnimationID)
-        
-        for bone in armature_obj.data.edit_bones:
+                        source_animation_entry = Global_TocManager.GetEntryFromGameArchive(
+                            animation, AnimationID
+                        )
+                        if source_animation_entry is None:
+                            raise Exception(f"Unable to get original animation {animation}")
+                        if not source_animation_entry.IsLoaded:
+                            source_animation_entry.Load(False, False)
+
+                        patch_animation_entry = Global_TocManager.GetPatchEntry_B(
+                            animation, AnimationID
+                        )
+                        if patch_animation_entry is not None:
+                            if not patch_animation_entry.IsLoaded:
+                                patch_animation_entry.Load(False, False)
+                            working_entry = deepcopy(patch_animation_entry)
+                        else:
+                            working_entry = deepcopy(source_animation_entry)
+
+                        state_count = len(working_entry.LoadedData.initial_bone_states)
+                        if state_count == len(old_hashes) and state_count > 0:
+                            working_source_hashes = old_hashes
+                        elif state_count == len(archive_source_hashes):
+                            # Repairs a patch produced by the old AQ path: its
+                            # animation was reset to original data while its bone
+                            # table had already been changed.
+                            working_source_hashes = archive_source_hashes
+                        elif 0 < state_count < len(archive_source_hashes):
+                            # Old AQ builds could append names/hashes without
+                            # appending matching initial states. Their existing
+                            # states and motion still follow the leading part of
+                            # that table, so retain that authored data and create
+                            # initial states only for the missing trailing bones.
+                            PrettyPrint(
+                                f"Repairing animation {animation}: {state_count} initial "
+                                f"states for {len(archive_source_hashes)} source bones",
+                                "warn"
+                            )
+                            working_source_hashes = archive_source_hashes[:state_count]
+                        else:
+                            # A zero-state or otherwise corrupt patch animation
+                            # has no reliable index map. Recover from the original
+                            # entry rather than writing another malformed file.
+                            working_entry = deepcopy(source_animation_entry)
+                            working_source_hashes = archive_source_hashes
+
+                        working_entry.LoadedData.remap_bones(
+                            working_source_hashes, target_hashes, bones_by_hash
+                        )
+                        expected_count = len(target_hashes)
+                        if len(working_entry.LoadedData.initial_bone_states) != expected_count:
+                            raise Exception(
+                                f"Animation {animation} initial-state count does not match "
+                                f"the target bone table ({expected_count})"
+                            )
+                        working_entry.Save()
+                        remapped_animation_entries.append(working_entry)
+
+                old_weights_by_mask = []
+                if state_machine_data and old_hashes != target_hashes:
+                    old_weights_by_mask = [
+                        dict(zip(old_hashes, blend_mask.bone_weights))
+                        for blend_mask in state_machine_data.blend_masks
+                    ]
+
+                if old_hashes != target_hashes:
+                    bone_data.BoneHashes = list(target_hashes)
+                    bone_data.Names = list(target_names)
+                    bone_data.NumNames = len(target_names)
+
+                if state_machine_data and old_hashes != target_hashes:
+                    for blend_mask, old_weights in zip(
+                        state_machine_data.blend_masks, old_weights_by_mask
+                    ):
+                        blend_mask.bone_weights = [
+                            old_weights.get(bone_hash, 0.0) for bone_hash in target_hashes
+                        ]
+                        blend_mask.bone_count = len(target_hashes)
+
+                for working_entry in remapped_animation_entries:
+                    Global_TocManager.AddEntryToPatchID(
+                        working_entry, working_entry.FileID, ReloadUI=False
+                    )
+                if remapped_animation_entries:
+                    Global_TocManager.ActivePatch.UpdateTypes()
+                if bone_entry and old_hashes != target_hashes:
+                    bone_entry.Save()
+                if state_machine_entry and old_hashes != target_hashes:
+                    state_machine_entry.Save()
+            else:
+                PrettyPrint(
+                    "Modified skeleton already has complete Patch animations; "
+                    "preserving the existing animation data"
+                )
+
+        # --- END ANIMATED BONE DATA ---
+
+        # Register all custom bones before resolving parents. In a one-pass
+        # loop, a child that appears before its custom parent is silently
+        # assigned to transform 0.
+        for bone in export_bones:
             try:
                 name_hash = int(bone.name)
             except ValueError:
                 name_hash = murmur32_hash(bone.name.encode("utf-8"))
-            try:
-                transform_index = transform_info.NameHashes.index(name_hash)
-            except ValueError:
-                # bone doesn't exist, add bone
+            if name_hash not in transform_info.NameHashes:
                 transform_info.NameHashes.append(name_hash)
                 transform_info.TransformMatrices.append(None)
                 transform_info.Transforms.append(None)
@@ -1686,82 +2723,14 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                 l.ParentBone = 0
                 transform_info.TransformEntries.append(l)
                 transform_info.NumTransforms += 1
-                transform_index = len(transform_info.NameHashes) - 1
-            
-            # set animated
+
+        for bone in export_bones:
             try:
-                animated = bone['Animated']
-                if animated and name_hash not in bone_data.BoneHashes:
-                    bone_data.BoneHashes.append(name_hash)
-                    bone_data.Names.append(bone.name)
-                    bone_data.NumNames += 1
-                    modified_bone_entry = True
-                    modified_state_machine = True
-                    for blend_mask in state_machine_data.blend_masks:
-                        blend_mask.bone_count += 1
-                        blend_mask.bone_weights.append(0.0)
-                    if state_machine_data:
-                        for animation in state_machine_data.animation_ids:
-                            animation_data = Global_TocManager.GetEntry(animation, AnimationID, IgnorePatch=False, SearchAll=True)
-                            if not animation_data.IsLoaded:
-                                animation_data.Load(False, False)
-                            animation_data.LoadedData.add_bone(bone)
-                            Global_TocManager.Save(animation, AnimationID)
-                if not animated and name_hash in bone_data.BoneHashes:
-                    list_index = bone_data.BoneHashes.index(name_hash)
-                    bone_data.BoneHashes.pop(list_index)
-                    bone_data.Names.pop(list_index)
-                    bone_data.NumNames -= 1
-                    modified_bone_entry = True
-                    modified_state_machine = True
-                    for blend_mask in state_machine_data.blend_masks:
-                        try:
-                            blend_mask.bone_weights.pop(list_index)
-                            blend_mask.bone_count -= 1
-                        except IndexError: # happens when removing a custom animated bone
-                            pass
-                    if state_machine_data:
-                        for animation in state_machine_data.animation_ids:
-                            animation_data = Global_TocManager.GetEntry(animation, AnimationID, IgnorePatch=False, SearchAll=True)
-                            if not animation_data.IsLoaded:
-                                animation_data.Load(False, False)
-                            try:
-                                animation_data.LoadedData.remove_bone(list_index)
-                            except IndexError: # happens when removing a custom animated bone
-                                pass
-                            Global_TocManager.Save(animation, AnimationID)
-                    else:
-                        raise Exception("No state machine property on armature, unable to automatically remove bone data from animations; please set a valid StateMachineID property.")
-            except (KeyError, AttributeError) as e:
-                print(e)
-                
-            # set ragdoll
-            '''
-            try:
-                bone_index = bone_data.BoneHashes.index(name_hash)
-                modified_state_machine = True
-                print(f"Setting jiggle bone for {bone.name}")
-                state_machine_data.remove_ragdoll(bone_index)
-                ragdoll = bone['Jiggle']
-                print(ragdoll)
-                weight = bone["Weight"]
-                gravity = bone["Gravity"]
-                param3 = bone["Param 3"]
-                param4 = bone["Param 4"]
-                param5 = bone["Param 5"]
-                param6 = bone["Param 6"]
-                param7 = bone["Param 7"]
-                param8 = bone["Param 8"]
-                param9 = bone["Param 9"]
-                params = [weight, gravity, param3, param4, param5, param6, param7, param8, param9]
-                if ragdoll:
-                    state_machine_data.set_ragdoll(bone_index, params)
-            except (KeyError, AttributeError) as e:
-                pass
-            except ValueError as e:
-                pass
-            '''
-            
+                name_hash = int(bone.name)
+            except ValueError:
+                name_hash = murmur32_hash(bone.name.encode("utf-8"))
+            transform_index = transform_info.NameHashes.index(name_hash)
+
             # set bone matrix
             loc, rot, scale = bone.matrix.decompose()
             if transform_info.TransformMatrices[transform_index]:
@@ -1777,7 +2746,7 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                 m[2][0], m[2][1], m[2][2], m[2][3],
                 m[3][0], m[3][1], m[3][2], m[3][3]
             ]
-            
+
             # set bone local transform
             transform_info.TransformMatrices[transform_index] = transform_matrix
             if bone.parent:
@@ -1795,7 +2764,7 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
             else:
                 transform_local = StingrayLocalTransform()
                 transform_info.Transforms[transform_index] = transform_local
-                
+
             # set bone parent
             if bone.parent:
                 try:
@@ -1807,38 +2776,48 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                     transform_info.TransformEntries[transform_index].ParentBone = parent_transform_index
                 except ValueError:
                     PrettyPrint(f"Failed to parent bone: {bone.name}.", 'warn')
-                    
-        armature_obj.hide_set(was_hidden)
-        for obj in prev_objs:
-            obj.select_set(True)
-        bpy.context.view_layer.objects.active = prev_obj
-        bpy.ops.object.mode_set(mode=prev_mode)
-        
-    if modified_bone_entry and bone_entry:
-        bone_entry.Save()
-        
-    if modified_state_machine and state_machine_entry:
-        state_machine_entry.Save()
-        
-        
+
+        # Light objects are regular bone-parented Blender objects; collecting
+        # them in Object mode avoids another fragile edit-mode context switch.
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+            _sync_hd2_lights_from_armature(
+                armature_obj, transform_info, light_list, unit_id
+            )
+        finally:
+            if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            armature_obj.hide_set(was_hidden)
+            for obj in list(bpy.context.selected_objects):
+                obj.select_set(False)
+            for obj in prev_objs:
+                obj.select_set(True)
+            bpy.context.view_layer.objects.active = prev_obj
+            if prev_obj is not None and prev_mode != "OBJECT":
+                bpy.ops.object.mode_set(mode=prev_mode)
+
+
     # get weights
     vert_idx = 0
-    numInfluences = 4                
+    numInfluences = 4
     if not bpy.context.scene.Hd2ToolPanelSettings.LegacyWeightNames:
         if len(object.vertex_groups) > 0:
-            for g in object.vertex_groups:
-                bone_names.append(g.name)
-            remap_info = [bone_names for _ in range(len(object.material_slots))]
+            remap_info, vertex_to_material_index = build_material_bone_remaps(
+                object, mesh
+            )
             bone_info[lod_index].SetRemap(remap_info, transform_info)
-        
-        vertex_to_material_index = [5000 for _ in range(len(mesh.vertices))]
+        else:
+            vertex_to_material_index = [5000 for _ in mesh.vertices]
+    else:
+        vertex_to_material_index = [0 for _ in mesh.vertices]
         for polygon in mesh.polygons:
-            for vertex in polygon.vertices:
-                vertex_to_material_index[vertex] = polygon.material_index
-    
+            for vertex_index in polygon.vertices:
+                vertex_to_material_index[vertex_index] = polygon.material_index
+
     if len(object.vertex_groups) > 0:
         for index, vertex in enumerate(mesh.vertices):
             group_idx = 0
+            retained_bone_keys = ['', '', '', '']
             for group in vertex.groups:
                 # limit influences
                 if group_idx >= numInfluences:
@@ -1846,7 +2825,7 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                 if group.weight > 0.001:
                     vertex_group        = object.vertex_groups[group.group]
                     vertex_group_name   = vertex_group.name
-                    
+
                     #
                     # CHANGE THIS TO SUPPORT THE NEW BONE NAMES
                     # HOW TO ACCESS transform_info OF STINGRAY MESH??
@@ -1882,7 +2861,7 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                             HDBoneIndex = bone_info[lod_index].GetRemappedIndex(real_index, material_idx)
                         except (ValueError, IndexError): # bone index not in remap because the bone is not in the LOD bone data
                             continue
-                            
+
                     # get real index from remapped index -> hashIndex = bone_info[mesh.LodIndex].GetRealIndex(bone_index); boneHash = transform_info.NameHashes[hashIndex]
                     # want to get remapped index from bone name
                     # hash = ...
@@ -1893,12 +2872,26 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                         boneIndices.extend([[[0,0,0,0] for n in range(len(vertices))]]*dif)
                     boneIndices[HDGroupIndex][vert_idx][group_idx] = HDBoneIndex
                     weights[vert_idx][group_idx] = group.weight
+                    # Ordinary names are stable across independently built
+                    # palettes. Resolve legacy palette-local names to the same
+                    # global transform identity before using them for ties.
+                    if bpy.context.scene.Hd2ToolPanelSettings.LegacyWeightNames:
+                        material_idx = vertex_to_material_index[index]
+                        real = bone_info[lod_index].GetRealIndex(HDBoneIndex, material_idx)
+                        retained_bone_keys[group_idx] = str(transform_info.NameHashes[real])
+                    else:
+                        retained_bone_keys[group_idx] = str(name_hash)
                     group_idx += 1
+            if group_idx:
+                # Only authored/rebuilt vertices enter this path. Leave raw
+                # native helper streams and unsupported/empty weights alone;
+                # existing export validation still rejects invalid bindings.
+                weights[vert_idx] = normalize_half4(weights[vert_idx], retained_bone_keys)
             vert_idx += 1
     else:
         boneIndices = []
         weights     = []
-    
+
     # set bone matrices in bone index mappings
     # matrices in bone_info are the inverted joint matrices (for some reason)
     # and also relative to the mesh transform
@@ -1917,6 +2910,31 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
                 m[3][0], m[3][1], m[3][2], m[3][3]
             ]
             bone_info[lod_index].Bones[i] = transform_matrix
+
+        if og_object.get("HD2SDK_IndependentExportBonesOnly", False):
+            # The authored Rest updates shared native nodes too. Untouched
+            # helper vertices keep their native encoding, but their separate
+            # skin palettes must bind against the final Rest, not the old one.
+            helper_origins = {lod_index: mesh_info.TransformIndex}
+            for helper in stingray_mesh_entry.RawMeshes:
+                helper_lod = int(helper.LodIndex)
+                if helper_lod < 0 or not helper.CanPreserveNativeStream():
+                    continue
+                helper_info = stingray_mesh_entry.MeshInfoArray[helper.MeshInfoIndex]
+                origin = helper_info.TransformIndex
+                if helper_lod in helper_origins and helper_origins[helper_lod] != origin:
+                    raise ValueError("Shared helper BoneInfo has incompatible mesh origins")
+                helper_origins[helper_lod] = origin
+                origin_world = transform_info.TransformMatrices[origin].ToBlenderMatrix()
+                for i, joint in enumerate(bone_info[helper_lod].RealIndices):
+                    if not 0 <= joint < len(transform_info.TransformMatrices):
+                        raise ValueError("Native helper bone index out of range")
+                    bind = (transform_info.TransformMatrices[joint].ToBlenderMatrix().inverted() @ origin_world).transposed()
+                    if any(not math.isfinite(float(value)) for row in bind for value in row):
+                        raise ValueError("Native helper inverse bind is non-finite")
+                    matrix = StingrayMatrix4x4()
+                    matrix.v = [value for row in bind for value in row]
+                    bone_info[helper_lod].Bones[i] = matrix
 
     #bpy.ops.object.mode_set(mode='OBJECT')
     # get faces
@@ -1989,15 +3007,55 @@ def NameFromMesh(mesh, id, customization_info, bone_names, use_sufix=True):
     if use_sufix and bone_names != None:
         for bone_name in bone_names:
             if murmur32_hash(bone_name.encode()) == mesh.MeshID:
-                name = bone_name
+                name = bone_name + name_sufix
 
     return name
 
-def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_entry, state_machine_entry):
+def CreateModel(
+    stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_entry,
+    state_machine_entry, source_bones_entry=None
+):
     addon_prefs = AQ_PublicClass.get_addon_prefs()
     model, customization_info, bone_names, transform_info, bone_info = stingray_unit.RawMeshes, stingray_unit.CustomizationInfo, stingray_unit.BoneNames, stingray_unit.TransformInfo, stingray_unit.BoneInfoArray
 
     StaticMeshCount = 0
+    created_mesh_objects = []
+    light_import_target = None
+
+    # Animated import state is always defined by the base game, regardless of
+    # whether this call merges into an existing armature, creates a new one,
+    # or was initiated while a Mesh (rather than its armature) was selected.
+    # A user Patch may supply Mesh bytes, but it must never seed Blender's
+    # Animated flags or the new import baseline.
+    if source_bones_entry is not None:
+        bones_entry = source_bones_entry
+
+    # A separate CreateModel call is a new import operation, not another LOD
+    # pass of the previous import. If MergeArmatures reuses the selected old
+    # skeleton, first restore this Unit's existing bones from the source bone
+    # table. The per-mesh loop below can then merge all LOD information again.
+    initial_skeleton_object = None
+    if (
+        bpy.context.scene.Hd2ToolPanelSettings.ImportArmature
+        and bpy.context.scene.Hd2ToolPanelSettings.MergeArmatures
+        and len(bpy.context.selected_objects) > 0
+        and bpy.context.selected_objects[0].type == "ARMATURE"
+    ):
+        initial_skeleton_object = bpy.context.selected_objects[0]
+    if initial_skeleton_object is not None:
+        # A reimport of an existing Blender skeleton is a reset operation. Use
+        # the base-game bone table for both the reset and all following LOD
+        # passes; otherwise the per-mesh loop would immediately re-enable the
+        # stale flag from a user Patch after resetting it.
+        source_animated_hashes = (
+            list(bones_entry.BoneHashes) if bones_entry is not None else []
+        )
+        reset_reimported_animated_bones(
+            initial_skeleton_object,
+            transform_info.NameHashes,
+            source_animated_hashes,
+            Global_BoneNames,
+        )
 
     if len(model) < 1: return
     # Make collection
@@ -2028,10 +3086,11 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
         # generate name
         if addon_prefs.DisplayFriendlyName_Mesh_Skel:
             friendlyName = GetFriendlyNameFromID(id, Global_NameHashes)
+            if len(friendlyName) >= 55: # 超过了blender的最大名称长度63
+                friendlyName = friendlyName.split("/")[-1]
         else:
             friendlyName = id
         name = NameFromMesh(mesh, friendlyName, customization_info, bone_names)
-
         # create mesh
         new_mesh = bpy.data.meshes.new(name)
         #new_mesh.from_pydata(mesh.VertexPositions, [], [])
@@ -2040,11 +3099,16 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
         # make object from mesh
         new_object = bpy.data.objects.new(name, new_mesh)
         # set transform
-        local_transform = mesh.DEV_Transform
-        new_object.scale = local_transform.scale
-        new_object.location = local_transform.pos
+        translation, rotation, scale = mesh.DEV_Transform.decompose()
+        new_object.scale = scale
+        new_object.location = translation
         new_object.rotation_mode = 'QUATERNION'
-        new_object.rotation_quaternion = mathutils.Matrix([local_transform.rot.x, local_transform.rot.y, local_transform.rot.z]).to_quaternion()
+        new_object.rotation_quaternion = rotation
+        #local_transform = mesh.DEV_Transform
+        #new_object.scale = local_transform.scale
+        #new_object.location = local_transform.pos
+        #new_object.rotation_mode = 'QUATERNION'
+        #new_object.rotation_quaternion = mathutils.Matrix([local_transform.rot.x, local_transform.rot.y, local_transform.rot.z]).to_quaternion()
 
         # set object properties
         new_object["MeshInfoIndex"] = mesh.MeshInfoIndex
@@ -2055,6 +3119,14 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
         new_object["Z_SwapID_2"]    = ""
         new_object["Z_SwapID_3"]    = ""
         new_object["Z_SwapID_4"]    = ""
+        new_object["HD2SDK_OriginalTransformHashes"] = json.dumps(
+            list(transform_info.NameHashes)
+        )
+        if bones_entry:
+            new_object["HD2SDK_OriginalAnimatedBoneHashes"] = json.dumps(
+                list(bones_entry.BoneHashes)
+            )
+        new_object["HD2SDK_AnimationStructureBaselineVersion"] = 1
         if customization_info.BodyType != "":
             new_object["Z_CustomizationBodyType"] = customization_info.BodyType
             new_object["Z_CustomizationSlot"]     = customization_info.Slot
@@ -2065,18 +3137,17 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
 
         # add object to scene collection
         new_collection.objects.link(new_object)
+        created_mesh_objects.append(new_object)
         # -- || ASSIGN NORMALS || -- #
         if len(mesh.VertexNormals) == len(mesh.VertexPositions):
-            # 4.3 compatibility change
-            if bpy.app.version[0] >= 4 and bpy.app.version[1] >= 1:
-                new_mesh.shade_smooth()
-            else:
+            if hasattr(new_mesh, "use_auto_smooth"):
                 new_mesh.use_auto_smooth = True
-            
+            new_mesh.shade_smooth()
+
             new_mesh.polygons.foreach_set('use_smooth',  [True] * len(new_mesh.polygons))
             if not isinstance(mesh.VertexNormals[0], int):
                 new_mesh.normals_split_custom_set_from_vertices(mesh.VertexNormals)
-            
+
 
         # -- || ASSIGN VERTEX COLORS || -- #
         if len(mesh.VertexColors) == len(mesh.VertexPositions):
@@ -2137,7 +3208,7 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
         if not bpy.context.scene.Hd2ToolPanelSettings.LegacyWeightNames:
             for bone in available_bones:
                 new_vertex_group = new_object.vertex_groups.new(name=str(bone))
-                
+
         # -- || ADD BONES || -- #
         skeletonObj = None
         armature = None
@@ -2157,7 +3228,7 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
                 skeletonObj['BonesID'] = str(stingray_unit.BonesRef)
                 skeletonObj['StateMachineID'] = str(stingray_unit.StateMachineRef)
                 skeletonObj.show_in_front = True
-                
+
             if addon_prefs.MakeCollections:
                 if 'skeletons' not in bpy.data.collections:
                     collection = bpy.data.collections.new("skeletons")
@@ -2196,11 +3267,6 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
                     if bones_entry and boneName in bones_entry.Names:
                         animated = True
                         bone_index = bones_entry.Names.index(boneName)
-                        for r in state_machine_entry.ragdolls:
-                            if r.bone_index == bone_index:
-                                ragdoll = True
-                                ragdoll_params = r.params
-                                break
                     try:
                         b = int(boneName)
                         if bones_entry and b in bones_entry.BoneHashes:
@@ -2212,23 +3278,14 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
                         newBone = armature.edit_bones.new(boneName)
                         newBone.tail = 0, 0.05, 0
                         if bones_entry: newBone['Animated'] = animated
-                        '''
-                        if bones_entry:
-                            newBone['Jiggle'] = ragdoll
-                            if ragdoll:
-                                newBone['Weight'] = ragdoll_params[0]
-                                newBone['Gravity'] = ragdoll_params[1]
-                                newBone['Param 3'] = ragdoll_params[2]
-                                newBone['Param 4'] = ragdoll_params[3]
-                                newBone['Param 5'] = ragdoll_params[4]
-                                newBone['Param 6'] = ragdoll_params[5]
-                                newBone['Param 7'] = ragdoll_params[6]
-                                newBone['Param 8'] = ragdoll_params[7]
-                                newBone['Param 9'] = ragdoll_params[8]
-                        '''
                         doPoseBone[newBone.name] = True
                     else:
                         doPoseBone[newBone.name] = False
+                    # A lower LOD may create this shared bone before the LOD
+                    # that identifies it as animated. Existing bones must gain
+                    # the flag as later meshes contribute their information.
+                    if bones_entry and animated:
+                        newBone['Animated'] = True
                     bones[i] = newBone
                     boneParents[i] = boneParent
                     boneTransforms[newBone.name] = transform_info.Transforms[i]
@@ -2267,19 +3324,21 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
                         doPoseBone[newBone.name] = True
                     else:
                         doPoseBone[newBone.name] = False
+                    if bones_entry and animated:
+                        newBone['Animated'] = True
                     bones[i] = newBone
                     boneTransforms[newBone.name] = transform_info.Transforms[boneIndex]
                     boneMatrices[newBone.name] = transform_info.TransformMatrices[boneIndex]
                     boneParents[i] = boneParentIndex
-                    
+
             # parent all bones
             for i, bone in enumerate(bones):
                 if boneParents[i] > -1:
                     bone.parent = bones[boneParents[i]]
-            
-            # pose all bones   
+
+            # pose all bones
             bpy.context.view_layer.objects.active = skeletonObj
-            
+
             for i, bone in enumerate(armature.edit_bones):
                 try:
                     if not doPoseBone[bone.name]: continue
@@ -2293,9 +3352,9 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
                     bone.matrix = mat
                 except Exception as e:
                     PrettyPrint(f"Failed setting bone matricies for: {e}. This may be intended", 'warn')
-                
+
             bpy.ops.object.mode_set(mode='OBJECT')
-            
+
             # assign armature modifier to the mesh object
             modifier = new_object.modifiers.get("ARMATURE")
             if (modifier == None):
@@ -2304,16 +3363,20 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
 
             if bpy.context.scene.Hd2ToolPanelSettings.ParentArmature:
                 new_object.parent = skeletonObj
-            
+
             # select the armature at the end so we can chain import when merging
             for obj in bpy.context.selected_objects:
                 obj.select_set(False)
             skeletonObj.select_set(True)
-            
+
             # create empty animation data if it does not exist
             if not skeletonObj.animation_data:
               skeletonObj.animation_data_create()
-                 
+
+            candidate = (len(skeletonObj.data.bones), skeletonObj, collection)
+            if light_import_target is None or candidate[0] > light_import_target[0]:
+                light_import_target = candidate
+
         # -- || ASSIGN MATERIALS || -- #
         # convert mesh to bmesh
         bm = bmesh.new()
@@ -2326,9 +3389,9 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
                 goreIndex = matNum
                 PrettyPrint(f"Found gore material at index: {matNum}")
             # append material to slot
-            try: 
+            try:
                 new_object.data.materials.append(bpy.data.materials[material.MatID])
-            except Exception: 
+            except Exception:
                 # raise Exception(f"Tool was unable to find material that this mesh uses, ID: {material.MatID}")
                 PrettyPrint(f"Tool was unable to find material that this mesh uses, ID: {material.MatID}")
                 # 未找到材质直接新建
@@ -2336,7 +3399,7 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
                 # 再次添加
                 try:
                     new_object.data.materials.append(bpy.data.materials[material.MatID])
-                except: 
+                except:
                     raise Exception(f"Tool was unable to find material that this mesh uses, ID: {material.MatID}")
             # assign material to faces
             numTris    = int(material.NumIndices/3)
@@ -2362,14 +3425,46 @@ def CreateModel(stingray_unit, id, Global_BoneNames, Global_NameHashes, bones_en
         #平滑着色
         addon_prefs = AQ_PublicClass.get_addon_prefs()
         if addon_prefs.ShadeSmooth:
-            # 4.3 compatibility change
-            if bpy.app.version[0] >= 4 and bpy.app.version[1] >= 1:
-                new_mesh.shade_smooth()
-
-            else:
+            if hasattr(new_mesh, "use_auto_smooth"):
                 new_mesh.use_auto_smooth = False
-                new_mesh.shade_smooth()
-                
+            new_mesh.shade_smooth()
+
+    # Import lights once, after every LOD has contributed its bones. When the
+    # add-on creates separate LOD armatures, use the most complete skeleton.
+    if light_import_target is not None:
+        _, light_armature, light_collection = light_import_target
+        _import_hd2_lights(
+            stingray_unit.LightList,
+            light_armature,
+            transform_info,
+            light_collection,
+            id,
+        )
+
+    # The trustworthy baseline must be captured only after every mesh/LOD has
+    # finished creating and merging its shared armature. Writing bones_entry
+    # earlier is merely provisional and caused mesh-only first saves to create
+    # animations when that table differed from the final Blender flags.
+    for imported_object in created_mesh_objects:
+        imported_armature = None
+        for modifier in imported_object.modifiers:
+            if modifier.type == "ARMATURE" and modifier.object is not None:
+                imported_armature = modifier.object
+                break
+        if imported_armature is None:
+            continue
+        imported_animated_hashes = [
+            compute_bone_name_hash(bone.name)
+            for bone in imported_armature.data.bones
+            if bone.get("Animated", False)
+        ]
+        imported_object["HD2SDK_OriginalAnimatedBoneHashes"] = json.dumps(
+            imported_animated_hashes
+        )
+        imported_object["HD2SDK_AnimationStructureBaselineVersion"] = (
+            ANIMATED_BONE_BASELINE_VERSION
+        )
+
 def GetFriendlyNameFromID(ID, NameHashes):
     try:
         hash_info_name = NameHashes[int(ID)]

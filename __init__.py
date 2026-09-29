@@ -1,40 +1,62 @@
 bl_info = {
-    "name": "HD2SDK AQ Edition",
+    "name": "Helldivers 2 SDK: AQ Edition",
     "blender": (4, 0, 0),
     "category": "Import-Export",
     "author": "kboykboy2, AQ_Echoo",
     "warning": "此为修改版",
-    "version": (2, 4, 3),
+    "version": (2, 5, 0),
     "doc_url": "https://github.com/Estecsky/HD2SDK-AQ-Edition"
 }
 
 #region Imports
 
 # System
-import ctypes, os, tempfile, subprocess, time, webbrowser, re
+import ctypes, os, tempfile, subprocess, time, webbrowser, re, uuid, importlib
 import random as r
 from copy import deepcopy
 import copy
 from math import ceil , sqrt # type: ignore
+import math
+import hashlib
 from pathlib import Path
+import traceback
+import json
 
 # Blender
 import bpy, bmesh, mathutils
 from bpy_extras.io_utils import ImportHelper, ExportHelper
-from bpy.props import StringProperty, BoolProperty, IntProperty, EnumProperty, PointerProperty
+from bpy.props import StringProperty, BoolProperty, IntProperty, EnumProperty, PointerProperty, CollectionProperty
 from bpy.types import Panel, Operator, PropertyGroup, Scene, Menu
 
-from .stingray.animation import StingrayAnimation, AnimationException
+from .stingray.animation import (
+    StingrayAnimation,
+    AnimationException,
+    action_animation_signature,
+    action_has_motion_changes,
+    iter_action_fcurves,
+)
 from .stingray.raw_dump import StingrayRawDump
 from .stingray.material import LoadShaderVariables, LoadShaderVariables_CN, StingrayMaterial,Global_ShaderVariables,Global_ShaderVariables_CN, AddMaterialToBlend_EMPTY
 from .stingray.composite_unit import StingrayCompositeUnit
 from .stingray.bones import LoadBoneHashes, StingrayBones
 from .stingray.unit import StingrayMeshFile , CreateModel, GetObjectsMeshData
+from .stingray.xaml import StingrayXAML
+from .stingray.lua import (
+    BOOT_LUA_FILE_ID,
+    StingrayLua,
+    LuaResourceError,
+    decode_lua_source,
+    is_luajit_bytecode,
+    make_boot_wrapper,
+    make_editable_export,
+    normalize_lua_input,
+    pack_lua_resource,
+    unpack_lua_resource,
+)
 from .stingray.texture import StingrayTexture
 from .stingray.particle import StingrayParticles
 from .stingray.state_machine import StingrayStateMachine
 from .utils.constants import *
-
 
 # Local
 # NOTE: Not bothering to do importlib reloading shit because these modules are unlikely to be modified frequently enough to warrant testing without Blender restarts
@@ -42,15 +64,55 @@ from .utils.math import MakeTenBitUnsigned, TenBitUnsigned
 from .utils.memoryStream import MemoryStream
 from .utils.logger import PrettyPrint
 from .utils.slim import is_slim_version, load_package, get_package_toc, slim_init,reconstruct_package_from_bundles ,get_full_package_list
-from .AQ_Prefs_HD2 import AQ_PublicClass, AQ_StaticMeshError
+from .hd2_system import material_packaging as shared_materials
+from .hd2_system import resource_isolation as independent_resources
+from .hd2_system import saved_package_context as saved_contexts
+from .hd2_system import test_deployment, author_credit
+from .hd2_system import runtime_group_ui
+from .hd2_system.physics_packaging import scope_physics_project, published_unit_rows
+from .preferences.access import AQ_PublicClass, AQ_StaticMeshError
+from .hd2_system import (
+    IndependentPackagingError,
+    PhysicsCompileError,
+    PhysicsPackagingError,
+    RuntimeManifestError,
+    SDKAdapterError,
+    UnitRigProfileError,
+    all_published_unit_ids,
+    apply_temporary_target,
+    atomic_write_json,
+    build_package_plan,
+    build_runtime_difference_manifest,
+    build_rig_document,
+    build_save_jobs,
+    format_save_job_error,
+    capture_target_properties,
+    compile_physics_pack,
+    compile_rig_pack,
+    format_plan_summary,
+    required_custom_bones_by_unit,
+    required_profile_bones_by_unit,
+    restore_target_properties,
+    split_plan_summary_lines,
+    snapshot_from_loaded_unit,
+)
 
 import zipfile
 import configparser
 import struct
 import concurrent.futures
-from . import addon_updater_ops
-from . import addonPreferences
-from . import get_update_archivelistCN
+from .updates import addon_updater_ops
+from .preferences import addon as addonPreferences
+from .updates import archive_index as get_update_archivelistCN
+
+if "_version" in globals():
+    _version = importlib.reload(_version)
+else:
+    from . import version as _version
+
+VERSION = _version.VERSION
+VERSION_TEXT = _version.VERSION_TEXT
+
 #endregion
 
 #region Global Variables
@@ -63,6 +125,7 @@ Global_palettepath         = f"{AddonPath}/deps/NormalPalette.dat"
 Global_materialpath        = f"{AddonPath}/materials"
 Global_typehashpath        = f"{AddonPath}/hashlists/typehash.txt"
 Global_friendlynamespath   = f"{AddonPath}/hashlists/friendlynames.txt"
+Global_archivehashpath   = f"{AddonPath}/hashlists/archivehashes.json"
 Global_variablespath       = f"{AddonPath}/hashlists/shadervariables.txt"
 Global_bonehashpath      = f"{AddonPath}/hashlists/bonehash.txt"
 
@@ -74,6 +137,7 @@ Global_defaultgamepath     = r"C:\Program Files (x86)\Steam\steamapps\common\Hel
 Global_defaultgamepath     = Global_defaultgamepath[:len(Global_defaultgamepath) - 1]
 Global_gamepath            = ""
 Global_gamepathIsValid = False
+
 
 Global_BoneNames = {}
 
@@ -270,6 +334,13 @@ TextureTypeLookup = {
         "Mask: ",
         ""
     ),
+    "translucent_flowing": (
+        "Noise02 Mask: ",
+        "",
+        "Noise01 Mask: ",
+        "blank Pos: ",
+        "blank Pos: "
+    ),
     "alphaclip": (
         "Normal/AO/Roughness: ",
         "Alpha Mask: ",
@@ -281,7 +352,26 @@ TextureTypeLookup = {
         "Base Color/Metallic: ",
         "Alpha Mask: ",
     ),
-
+    "reticle": (
+        "Reticle Mask: ",
+        "LenOcclusion: ",
+        "",
+        "Len Mask: ",
+    ),
+    "cutout_scope": (
+        "Base Color: ",
+        "",
+        "",
+        "Normal/AO/Roughness: ",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Cutout Mask: ",
+        "",
+        "",
+    ),
     
     
 }
@@ -289,6 +379,7 @@ TextureTypeLookup = {
 Global_Materials = (
         ("bloom", "Bloom", "A bloom material with two color, normal map which does not render in the UI"),
         ("original", "Original", "The original template used for all mods uploaded to Nexus prior to the addon's public release, which is bloated with additional unnecessary textures. Sourced from a terminid."),
+
         ("advanced_default", "Advanced 默认无光", "A more comlpicated material, that is color, normal, emission and PBR capable which renders in the UI. Sourced from the Illuminate Overseer."),   
         ("advanced_orange", "Advanced 橙光", "A more comlpicated material, that is color, normal, emission and PBR capable which renders in the UI. Sourced from the Illuminate Overseer."),
         ("advanced_yellow", "Advanced 黄光", "A more comlpicated material, that is color, normal, emission and PBR capable which renders in the UI. Sourced from the Illuminate Overseer."),
@@ -302,12 +393,14 @@ Global_Materials = (
         ("advanced_green", "Advanced 绿光", "A more comlpicated material, that is color, normal, emission and PBR capable which renders in the UI. Sourced from the Illuminate Overseer."),
 
         ("flowing","流光","光能电塔的流光材质，材质参数中切换uv空间改成负的就是从上往下，正的是从下往上"),
-        ("glass", "透明玻璃", "透明玻璃，不知道能干嘛，自己猜()"),
+        ("translucent_flowing", "高级流光", "半透明流光材质，可自定义两张流动遮罩与流动方向，来自光能证真者护盾"),
+        ("glass", "透明玻璃", "透明玻璃"),
         ("basic+Fixed", "Basic+", "A basic material with a color, normal, and PBR map which renders in the UI, Sourced from a SEAF NPC"),
         ("basic", "Basic", "A basic material with a color, normal, and PBR map. Sourced from a trash bag prop."),
         ("alphaclip", "Alpha Clip", "金属度在颜色贴图的alpha通道，A material that supports an alpha mask which does not render in the UI. Sourced from a skeleton pile"),
         ("alphaclip+", "Alpha Clip+", "一个支持alpha遮罩的材质，金属度在颜色贴图的alpha通道，带有额外的发光功能，不会在UI中显示，来自机器人生物处理器"),
-
+        ("reticle", "准星", "准星材质，带有准星遮罩和发光参数，来自全息瞄准镜的镜片"),
+        ("cutout_scope", "带镜头裁剪瞄具", "镜头裁剪瞄具材质，带有裁剪遮罩和法向AO糙度，不可调金属度，镜头缩放参数控制裁剪距离，还需要模型具有第三个UV，来自1.5倍红点瞄准镜"),
     )
 
 
@@ -385,9 +478,23 @@ def GetDisplayData():
     return [DisplayTocEntries, DisplayTocTypes, DisplayTocArchivePath, DisplayTocPatchPath,
             DisplayTocPatchPath_Add]
 
+
 #endregion
 
 #region Functions: Blender
+
+def _enable_full_mesh_smoothing(mesh):
+    """Enable fully smooth shading without relying on version-specific operators."""
+
+    if mesh is None or not hasattr(mesh, "polygons"):
+        return
+    if mesh.polygons:
+        mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+    if hasattr(mesh, "use_auto_smooth"):
+        mesh.use_auto_smooth = True
+    if hasattr(mesh, "auto_smooth_angle"):
+        mesh.auto_smooth_angle = math.pi
+
 
 # 检查材质名称是否以'.001'结尾
 def CheckValidMaterial(obj, slot_index):
@@ -444,12 +551,18 @@ def GetFriendlyNameFromID(ID):
     return str(ID)
     
 
-def GetArchiveNameFromID(EntryID):
+def GetArchiveNameFromID(ArchiveID):
     global Global_updatearchivelistCN_list
     for hash in Global_updatearchivelistCN_list:
-        if hash["ArchiveID"].find(EntryID) != -1:
+        if hash["ArchiveID"].find(ArchiveID) != -1:
             ArchiveNameCN = str(hash["Classify"]).replace("'", "").replace("\n", "") + " - " + hash["Description"]
             return ArchiveNameCN
+    return ""
+
+def GetArchiveNameFromID_EN(ArchiveID):
+    for hash in Global_ArchiveHashes:
+        if hash[0] == ArchiveID:
+            return hash[1]
     return ""
 
 def HasFriendlyName(ID):
@@ -558,11 +671,22 @@ def LoadUpdateArchiveList_CN():
     Global_updatearchivelistCN_list = []
     with open(Global_updatearchivelistCNpath, 'r', encoding='utf-8') as f:
         for line in f.readlines():
-            if "本地更新时间" in line or line.find("None#None#None") != -1 or "以下是2025.3.18更新后" in line:
+            if "本地更新时间" in line or line.find("None#None#None") != -1:
                 continue
             Global_updatearchivelistCN_list.append({"ArchiveID": str(line.split("#")[0]),
                                                     "Classify": line.split("#")[1].split(","),
                                                     "Description": line.split("#")[2] })
+
+Global_ArchiveHashes = []
+def LoadArchiveHashes():
+    with open(Global_archivehashpath, "r") as file:
+        data = json.load(file)
+
+    for title in data:
+        for innerKey in data[title]:
+            Global_ArchiveHashes.append([innerKey, title + ": " + data[title][innerKey]])
+
+    Global_ArchiveHashes.append([BaseArchiveHexID, "SDK: Base Patch Archive"])
             
 def GetEntryParentMaterialID(entry):
     if entry.TypeID == MaterialID:
@@ -682,7 +806,7 @@ class TocEntry:
         self.Unknown1           = TocFile.uint64(self.Unknown1)
         self.Unknown2           = TocFile.uint64(self.Unknown2)
         self.TocDataSize        = TocFile.uint32(len(self.TocData))
-        self.StreamSize         = TocFile.uint32(len(self.StreamData))
+        self.StreamSize        = TocFile.uint32(len(self.StreamData))
         self.GpuResourceSize    = TocFile.uint32(len(self.GpuData))
         self.Unknown3           = TocFile.uint32(self.Unknown3)
         self.Unknown4           = TocFile.uint32(self.Unknown4)
@@ -748,6 +872,8 @@ class TocEntry:
         if self.TypeID == BoneID: callback = LoadStingrayBones
         if self.TypeID == AnimationID: callback = LoadStingrayAnimation
         if self.TypeID == StateMachineID: callback = LoadStingrayStateMachine
+        if self.TypeID == XamlID: callback = LoadStingrayXaml
+        if self.TypeID == LuaID: callback = LoadStingrayLua
         # if callback == None: callback = LoadStingrayDump
 
         if callback != None:
@@ -769,6 +895,8 @@ class TocEntry:
         if self.TypeID == AnimationID: callback = SaveStingrayAnimation
         if self.TypeID == BoneID: callback = SaveStingrayBones
         if self.TypeID == StateMachineID: callback = SaveStingrayStateMachine
+        if self.TypeID == XamlID: callback = SaveStingrayXaml
+        if self.TypeID == LuaID: callback = SaveStingrayLua
         # if callback == None: callback = SaveStingrayDump
 
         if self.IsLoaded:
@@ -982,17 +1110,20 @@ class StreamToc:
             if Entry.FileID == int(FileID) and Entry.TypeID == TypeID:
                 return Entry
         return None
-    def AddEntry(self, NewEntry):
+    def AddEntry(self, NewEntry, override=False, ReloadUI=True):
         if self.GetEntry(NewEntry.FileID, NewEntry.TypeID) != None:
-            raise Exception("Entry with same ID already exists")
+            if not override:
+                raise Exception("Entry with same ID already exists")
+            # override=True：先移除旧条目再添加，避免 TocEntries 列表残留重复条目
+            self.RemoveEntry(NewEntry.FileID, NewEntry.TypeID, ReloadUI=False)
         try:
             self.TocDict[NewEntry.TypeID][NewEntry.FileID] = NewEntry
         except KeyError:
             self.TocDict[NewEntry.TypeID] = {}
             self.TocDict[NewEntry.TypeID][NewEntry.FileID] = NewEntry
         self.TocEntries.append(NewEntry)
-        self.UpdateTypes()
-    def RemoveEntry(self, FileID, TypeID):
+        if ReloadUI: self.UpdateTypes()
+    def RemoveEntry(self, FileID, TypeID, ReloadUI=True):
         Entry = self.GetEntry(FileID, TypeID)
         if Entry != None:
             try:
@@ -1000,7 +1131,7 @@ class StreamToc:
             except KeyError:
                 pass
             self.TocEntries.remove(Entry)
-            self.UpdateTypes()
+            if ReloadUI: self.UpdateTypes()
 
 class TocManager():
     def __init__(self):
@@ -1046,6 +1177,8 @@ class TocManager():
         
         for Archive in self.LoadedArchives:
             if Archive.Path == path:
+                if SetActive and not IsPatch:
+                    self.SetActive(Archive)
                 return Archive
         archiveID = path.replace(Global_gamepath, '')
         archiveName = GetArchiveNameFromID(archiveID)
@@ -1054,26 +1187,26 @@ class TocManager():
         toc.FromFile(path)
     
         # add to global animation mapping:
-        # global Global_AnimationMapping
-        # if toc.TocDict.get(StateMachineID, None):
-        #     for state_machine in toc.TocDict[StateMachineID].values():
-        #         if not state_machine.IsLoaded:
-        #             state_machine.Load(False, False)
-        #         for animation_id in state_machine.LoadedData.animation_ids:
-        #             try:
-        #                 Global_AnimationMapping[animation_id].add(state_machine.FileID)
-        #             except KeyError:
-        #                 Global_AnimationMapping[animation_id] = set()
-        #                 Global_AnimationMapping[animation_id].add(state_machine.FileID)
+        global Global_AnimationMapping
+        if toc.TocDict.get(StateMachineID, None):
+            for state_machine in toc.TocDict[StateMachineID].values():
+                if not state_machine.IsLoaded:
+                    state_machine.Load(False, False)
+                for animation_id in state_machine.LoadedData.animation_ids:
+                    try:
+                        Global_AnimationMapping[animation_id].add(state_machine.FileID)
+                    except KeyError:
+                        Global_AnimationMapping[animation_id] = set()
+                        Global_AnimationMapping[animation_id].add(state_machine.FileID)
 
 
         if SetActive and not IsPatch:
             self.LoadedArchives.append(toc)
-            self.ActiveArchive = toc
-            # bpy.context.scene.Hd2ToolPanelSettings.LoadedArchives = archiveID 
+            self.SetActive(toc)
         elif SetActive and IsPatch:
             self.Patches.append(toc)
             self.ActivePatch = toc
+            bpy.context.scene.Hd2ToolPanelSettings.Patches = self.ActivePatch.Name
             
             # 预载材质模板
             for entry in self.ActivePatch.TocEntries:
@@ -1125,7 +1258,34 @@ class TocManager():
         return toc
 
     def GetEntryByLoadArchive(self, FileID: int, TypeID: int):
-        return self.GetEntry(FileID, TypeID, SearchAll=False, IgnorePatch=True)
+        return self.GetEntry(FileID, TypeID, SearchAll=True, IgnorePatch=True)
+
+    def GetEntryFromGameArchive(self, FileID: int, TypeID: int):
+        """Get an entry from a base game archive, never from a user Patch.
+
+        GetEntryByLoadArchive ignores ActivePatch but still checks
+        ActiveArchive first. When a generated .patch_N file is opened as an
+        archive, that returns the modified bone table and makes a reimport
+        inherit its Animated flags. SearchArchives contains the extensionless
+        base game packages, so query it directly before any active archive.
+        """
+        for search_archive in self.SearchArchives:
+            if not search_archive.HasEntry(FileID, TypeID):
+                continue
+            game_archive = self.LoadArchive(search_archive.Path, False)
+            entry = game_archive.GetEntry(FileID, TypeID)
+            if entry is not None:
+                return entry
+
+        # Compatibility fallback for unusual/manual data layouts: allow a
+        # loaded extensionless archive, but still reject every .patch_N path.
+        for archive in self.LoadedArchives:
+            if ".patch_" in archive.Path.lower():
+                continue
+            entry = archive.GetEntry(FileID, TypeID)
+            if entry is not None:
+                return entry
+        return None
     # def GetEntryByPatch(self, FileID: int, TypeID: int):
     #     return self.GetEntry(FileID, TypeID)
 
@@ -1140,12 +1300,14 @@ class TocManager():
         self.Patches = []
         self.ActivePatch = None
         
-        all_archives_UndoModified()
-        
     def SetActive(self, Archive):
         if Archive != self.ActiveArchive:
             self.ActiveArchive = Archive
             self.DeselectAll()
+        settings = getattr(bpy.context.scene, 'Hd2ToolPanelSettings', None)
+        if (settings is not None and Archive in self.LoadedArchives
+                and settings.LoadedArchives != Archive.Name):
+            settings.LoadedArchives = Archive.Name
 
     def SetActiveByName(self, Name):
         for Archive in self.LoadedArchives:
@@ -1159,6 +1321,12 @@ class TocManager():
         if not IgnorePatch and self.ActivePatch != None:
             Entry = self.ActivePatch.GetEntry(FileID, TypeID)
             if Entry != None:
+                return Entry
+        # Only the explicitly saved material pack of this Blend project is a
+        # cross-Archive authoring source. Never search unrelated user Patches.
+        if not IgnorePatch and TypeID in shared_materials.RESOURCE_TYPES:
+            Entry = _shared_material_entry(self, int(FileID), TypeID)
+            if Entry is not None:
                 return Entry
         # Check Active Archive
         if self.ActiveArchive != None:
@@ -1219,24 +1387,40 @@ class TocManager():
 
     #______________________#
     # ---- Patch Code ---- #
-    def PatchActiveArchive(self,path=None):
-        self.ActivePatch.ToFile(path= path)
+    def PatchActiveArchive(self, path=None):
+        patch = self.ActivePatch
+        if bpy.context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+            patch = _independent_model_export_patch(bpy.context, patch)
+            _validate_independent_patch_archive_binding()
+            requested = Path(path or patch.Path)
+            index = re.search(r"\.patch_(\d+)$", requested.name)
+            if index is None:
+                raise shared_materials.MaterialPackagingError("模型输出名称缺少合法 Patch 序号")
+            # Only the material pack uses 9ba. Keep body/helmet filenames bound
+            # to their own base Archive, even with an old Rename toggle set.
+            path = str(requested.with_name(Global_TocManager.ActiveArchive.Name + ".patch_" + index.group(1)))
+        patch.ToFile(path=path)
 
-    def CreatePatchFromActive(self,NewPatchIndex):
-        if self.ActiveArchive == None:
+    def CreatePatchFromActive(self, NewPatchIndex):
+        if self.ActiveArchive is None:
             raise Exception("没有激活的Archive，无法创建Patch，请先载入一个Archive。")
-
         self.ActivePatch = deepcopy(self.ActiveArchive)
-        self.ActivePatch.TocEntries  = []
-        self.ActivePatch.TocTypes    = []
-        # TODO: ask for which patch index
+        self.ActivePatch.TocEntries = []
+        self.ActivePatch.TocTypes = []
         path = self.ActiveArchive.Path
+
         if path.find(".patch_") != -1:
             path = path[:path.find(".patch_")] + ".patch_" + str(NewPatchIndex)
         else:
             path = path + ".patch_" + str(NewPatchIndex)
+
+        # A blank Patch must not retain the copied base Archive's lookup table.
+        self.ActivePatch.TocDict = {}
+        path = self.remove_duplicate_patches(path)
+
         self.ActivePatch.UpdatePath(path)
         self.Patches.append(self.ActivePatch)
+        bpy.context.scene.Hd2ToolPanelSettings.Patches = self.ActivePatch.Name
         
     def RenameActivePatch(self, NewPath):
         if self.ActivePatch == None:
@@ -1262,27 +1446,40 @@ class TocManager():
         else:
             return True
 
-    def AddNewEntryToPatch(self, Entry):
+    def AddNewEntryToPatch(self, Entry, ReloadUI=True):
         if self.ActivePatch == None:
             raise Exception("没有激活的Patch，无法添加Entry，请先创建一个Patch。")
-        self.ActivePatch.AddEntry(Entry)
+        self.ActivePatch.AddEntry(Entry, ReloadUI=ReloadUI)
 
-    def AddEntryToPatch(self, FileID, TypeID):
+    def AddEntryToPatch(self, FileID, TypeID, ReloadUI=True):
         if self.ActivePatch == None:
             raise Exception("没有激活的Patch，无法添加Entry，请先创建一个Patch。")
 
-        Entry = self.GetEntry(FileID, TypeID)
+        # Unit dependencies frequently live outside the active archive. Search
+        # every indexed archive so Bones/StateMachine/Animation copies are not
+        # silently omitted from the patch.
+        Entry = self.GetEntry(FileID, TypeID, SearchAll=True)
         if Entry != None:
             PatchEntry = deepcopy(Entry)
             if PatchEntry.IsSelected:
                 self.SelectEntries([PatchEntry], True)
-            self.ActivePatch.AddEntry(PatchEntry)
+            self.ActivePatch.AddEntry(PatchEntry, ReloadUI=ReloadUI)
             return PatchEntry
         return None
 
-    def RemoveEntryFromPatch(self, FileID, TypeID):
+    def AddEntryToPatchID(self, Entry, dest_id, ReloadUI=True):
+        if self.ActivePatch == None:
+            raise Exception("没有激活的Patch，无法添加Entry，请先创建一个Patch。")
+        if Entry != None:
+            PatchEntry = deepcopy(Entry)
+            PatchEntry.FileID = dest_id
+            self.ActivePatch.AddEntry(PatchEntry, override=True, ReloadUI=ReloadUI)
+            return PatchEntry
+        return None
+
+    def RemoveEntryFromPatch(self, FileID, TypeID, ReloadUI=True):
         if self.ActivePatch != None:
-            self.ActivePatch.RemoveEntry(FileID, TypeID)
+            self.ActivePatch.RemoveEntry(FileID, TypeID, ReloadUI=ReloadUI)
         return None
 
     def GetPatchEntry(self, Entry):
@@ -1305,6 +1502,25 @@ class TocManager():
         Entry = self.GetEntry(FileID, TypeID)
         if Entry != None:
             self.CopyPaste(Entry, False, NewID)
+    #______________________#
+    # ---- Other Code ---- #
+    def remove_duplicate_patches(self, path):
+        """Choose a numeric free suffix for the same Archive (9 < 10 < 11)."""
+        patch_name = os.path.basename(path)
+        names = {patch.Name for patch in self.Patches}
+        if patch_name not in names:
+            return path
+        match = re.fullmatch(r"(.+\.patch_)(\d+)", patch_name)
+        if match is None:
+            raise ValueError("Patch 名称必须以 .patch_数字 结尾")
+        prefix = match.group(1)
+        indices = [
+            int(name[len(prefix):]) for name in names
+            if name.startswith(prefix) and name[len(prefix):].isdigit()
+        ]
+        next_index = max(indices + [int(match.group(2))]) + 1
+        return os.path.join(os.path.dirname(path), prefix + str(next_index))
+
 
 #endregion
 
@@ -1498,7 +1714,7 @@ def CheckTextureName(TexPath):
 #     PrettyPrint("DDS_Export_SRGB", "info")
     
 def DDS_Export_Linear(tempdir,input_path):
-    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "BC7_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha",input_path ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     PrettyPrint("DDS_Export_Linear", "info")
 #endregion
 
@@ -1543,7 +1759,7 @@ def BlendImageToStingrayTexture(image, StingrayTex):
     image.filepath_raw = tga_path
     image.save()
 
-    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "R8G8B8A8_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha", tga_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", "BC7_UNORM","-m","1","--ignore-srgb","-alpha","-sepalpha", "--tga-zero-alpha", tga_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     
     if os.path.isfile(dds_path):
         with open(dds_path, 'r+b') as f:
@@ -1574,7 +1790,9 @@ def LoadStingrayBones(ID, TocData, GpuData, StreamData, Reload, MakeBlendObject)
     return StingrayBonesData
 
 def SaveStingrayBones(self, ID, TocData, GpuData, StreamData, LoadedData):
-    f = MemoryStream(TocData, IOMode="write") # Load in original TocData before overwriting it
+    # A shorter bone table must not retain strings from the old buffer. Those
+    # stale names make animation indices resolve to the wrong bones on reload.
+    f = MemoryStream(IOMode="write")
     LoadedData.Serialize(f)
     return [f.Data, b"", b""]
 
@@ -1596,7 +1814,8 @@ def LoadStingrayUnit(ID, TocData, GpuData, StreamData, Reload, MakeBlendObject, 
     toc  = MemoryStream(TocData)
     gpu  = MemoryStream(GpuData)
         
-    
+    bone_data = None
+    state_machine_data = None
     StingrayMesh = StingrayMeshFile()
     StingrayMesh.NameHash = int(ID)
     StingrayMesh.LoadMaterialSlotNames = LoadMaterialSlotNames
@@ -1604,13 +1823,23 @@ def LoadStingrayUnit(ID, TocData, GpuData, StreamData, Reload, MakeBlendObject, 
     bones_entry = Global_TocManager.GetEntry(StingrayMesh.BonesRef, BoneID, SearchAll=True, IgnorePatch=False)
     if bones_entry and not bones_entry.IsLoaded:
         bones_entry.Load(False, False)
+    source_bones_entry = Global_TocManager.GetEntryFromGameArchive(
+        StingrayMesh.BonesRef, BoneID
+    )
+    if source_bones_entry and not source_bones_entry.IsLoaded:
+        source_bones_entry.Load(False, False)
     state_machine_entry = Global_TocManager.GetEntry(StingrayMesh.StateMachineRef, StateMachineID, SearchAll=True, IgnorePatch=False)
     if state_machine_entry and not state_machine_entry.IsLoaded:
         state_machine_entry.Load(False, False)
-    if MakeBlendObject and bones_entry and state_machine_entry: 
-        CreateModel(StingrayMesh, str(ID), Global_BoneNames,Global_NameHashes, bones_entry.LoadedData, state_machine_entry.LoadedData)
-    elif MakeBlendObject: 
-        CreateModel(StingrayMesh, str(ID), Global_BoneNames,Global_NameHashes, None, None)
+    if bones_entry: bone_data = bones_entry.LoadedData
+    if state_machine_entry: state_machine_data = state_machine_entry.LoadedData
+    source_bone_data = (
+        source_bones_entry.LoadedData if source_bones_entry is not None else bone_data
+    )
+    if MakeBlendObject: CreateModel(
+        StingrayMesh, str(ID), Global_BoneNames, Global_NameHashes,
+        bone_data, state_machine_data, source_bone_data
+    )
     return StingrayMesh
 
 def SaveStingrayMesh(self,ID, TocData, GpuData, StreamData, StingrayMesh):
@@ -1635,11 +1864,31 @@ def SaveStingrayMesh(self,ID, TocData, GpuData, StreamData, StingrayMesh):
                     newmesh = copy.copy(lod0)
                     newmesh.MeshInfoIndex = StingrayMesh.RawMeshes[n].MeshInfoIndex
                     StingrayMesh.RawMeshes[n] = newmesh
+                    StingrayMesh.TransformInfo.TransformMatrices[StingrayMesh.MeshInfoArray[n].TransformIndex] = StingrayMesh.TransformInfo.TransformMatrices[StingrayMesh.MeshInfoArray[lod0.MeshInfoIndex].TransformIndex]
     # StingrayMesh.RawMeshes = FinalMeshes
     toc  = MemoryStream(IOMode = "write")
     gpu  = MemoryStream(IOMode = "write")
     StingrayMesh.Serialize(toc, gpu, Global_TocManager)
     return [toc.Data, gpu.Data, b""]
+
+def LoadStingrayXaml(ID, TocData, GpuData, StreamData, Reload, MakeBlendObject):
+    f = MemoryStream(TocData)
+    Xaml = StingrayXAML()
+    Xaml.Serialize(f)
+    return Xaml
+
+def SaveStingrayXaml(self, ID, TocData, GpuData, StreamData, LoadedData):
+    f = MemoryStream(IOMode="write")
+    LoadedData.Serialize(f)
+    return [f.Data, b"", b""]
+
+def LoadStingrayLua(ID, TocData, GpuData, StreamData, Reload, MakeBlendObject):
+    """拆掉 Stingray 资源头，让插件内部只处理 Lua 正文。"""
+    return StingrayLua().FromResource(TocData)
+
+def SaveStingrayLua(self, ID, TocData, GpuData, StreamData, LoadedData):
+    """保存时自动恢复长度和版本组成的 8 字节资源头。"""
+    return [LoadedData.ToResource(), b"", b""]
 
 #endregion
 
@@ -1761,8 +2010,12 @@ class DefaultLoadArchiveOperator(Operator):
     bl_description = "载入默认基础资产"
     bl_idname = "helldiver2.archive_import_default"
 
+    @classmethod
+    def poll(cls, context):
+        return True
+
     def execute(self, context):
-        path = Global_gamepath + BaseArchiveHexID
+        path = os.path.join(Global_gamepath, BaseArchiveHexID)
         if not os.path.exists(Global_gamepath):
             self.report({'ERROR'}, "Current Filepath is Invalid. Change this in the Settings")
             context.scene.Hd2ToolPanelSettings.MenuExpanded = True
@@ -1828,52 +2081,59 @@ class UnloadPatchesOperator(Operator):
 
     def execute(self, context):
         Global_TocManager.UnloadPatches()
+
+        scn = context.scene
+        addon_prefs = AQ_PublicClass.get_addon_prefs()
         return{'FINISHED'}
 
 class CreatePatchFromActiveOperator(Operator):
+    """Create one empty Patch; batch creation is not part of this edition."""
     bl_label = "Create Patch"
     bl_idname = "helldiver2.archive_createpatch"
 
-    NewPatchIndex : IntProperty(name="新Patch序号", default=0)
+    NewPatchIndex: IntProperty(
+        name="新Patch序号", default=0, min=0,
+        description="创建一个空 Patch；重复序号自动在当前最大序号基础上递增",
+    )
+
     def draw(self, context):
-        layout = self.layout; row = layout.row()
-        row.prop(self, "NewPatchIndex", icon='COPY_ID')
-        # print("NewPatchIndex:", self.NewPatchIndex)
-    
-    def execute(self, context):
-        Global_TocManager.CreatePatchFromActive(NewPatchIndex = self.NewPatchIndex)
+        self.layout.prop(self, "NewPatchIndex", icon='COPY_ID')
 
-        # Redraw
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D": area.tag_redraw()
-        return{'FINISHED'}
-        
-    def invoke(self, context, event):
-        wm = context.window_manager
-        if self.NewPatchIndex == 0:
-            return wm.invoke_props_dialog(self)
-        else:
-            return {'FINISHED'}
-    
     def execute(self, context):
-        Global_TocManager.CreatePatchFromActive(NewPatchIndex = self.NewPatchIndex)
+        try:
+            Global_TocManager.CreatePatchFromActive(NewPatchIndex=self.NewPatchIndex)
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        self.report({'INFO'}, "成功创建一个Patch")
+        if context.screen is not None:
+            for area in context.screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+        return {'FINISHED'}
 
-        # Redraw
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D": area.tag_redraw()
-        
-        return{'FINISHED'}
     def invoke(self, context, event):
-        wm = context.window_manager
-        return wm.invoke_props_dialog(self)
+        return context.window_manager.invoke_props_dialog(self)
 
 class PatchArchiveOperator(Operator):
     bl_label = "Patch Archive"
     bl_idname = "helldiver2.archive_export"
+    bl_description = "将当前Patch写入当前预览路径，注意同名文件将会被覆盖"
+
 
     def execute(self, context):
         global Global_TocManager
         global Global_PatchBasePath
+        addon_prefs = AQ_PublicClass.get_addon_prefs()
+        independent_plan = None
+        independent_physics = None
+        if context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+            try:
+                independent_plan, independent_physics = _prepare_independent_export(context)
+            except Exception as error:
+                self.report({'ERROR'}, str(error))
+                return {'CANCELLED'}
+        New_path = ""
         
         if bpy.context.scene.Hd2ToolPanelSettings.IsChangeOutPath and bpy.context.scene.Hd2ToolPanelSettings.NewPatchOutPath:
             if bpy.context.scene.Hd2ToolPanelSettings.IsRenamePatch and bpy.context.scene.Hd2ToolPanelSettings.NewPatchName:
@@ -1883,12 +2143,10 @@ class PatchArchiveOperator(Operator):
                     return {'CANCELLED'}
                 if check_name.find("9ba626afa44a3aa3.patch_") == -1:
                     self.report({'WARNING'}, "没有重命名为基础资产的patch")
-                # New_path = Global_TocManager.RenameActivePatch(NewPath = bpy.context.scene.Hd2ToolPanelSettings.NewPatchName)
                 New_path = os.path.join(bpy.context.scene.Hd2ToolPanelSettings.NewPatchOutPath, check_name)
-                Global_TocManager.PatchActiveArchive(path= New_path)
             else:
                 New_path = os.path.join(bpy.context.scene.Hd2ToolPanelSettings.NewPatchOutPath, Global_TocManager.ActivePatch.Name)
-                Global_TocManager.PatchActiveArchive(path= New_path)
+            Global_TocManager.PatchActiveArchive(path=New_path)
         else:
             if bpy.context.scene.Hd2ToolPanelSettings.IsRenamePatch and bpy.context.scene.Hd2ToolPanelSettings.NewPatchName:
                 check_name = bpy.context.scene.Hd2ToolPanelSettings.NewPatchName
@@ -1898,14 +2156,120 @@ class PatchArchiveOperator(Operator):
                 if check_name.find("9ba626afa44a3aa3.patch_") == -1:
                     self.report({'WARNING'}, "没有重命名为基础资产的patch")
                 New_path = Global_TocManager.RenameActivePatch(NewPath = bpy.context.scene.Hd2ToolPanelSettings.NewPatchName)
-                Global_TocManager.PatchActiveArchive(path= New_path)
+                Global_TocManager.PatchActiveArchive(path=New_path)
             else:
                 Global_TocManager.PatchActiveArchive()
 
-        self.report({'INFO'}, f"写入patch完成,文件保存在{Global_PatchBasePath}")
+        manifest_path = _write_independent_manifest(
+            context,
+            Global_PatchBasePath,
+            independent_plan,
+            independent_physics,
+            emit_authoring_json=False,
+        )
+        manifest_notice = f"；独立清单：{manifest_path}" if manifest_path is not None else ""
+        self.report({'INFO'}, f"写入patch完成,文件保存在{Global_PatchBasePath}{manifest_notice}")
+        _report_independent_external_materials(self, independent_plan)
         bpy.context.scene.Hd2ToolPanelSettings.IsZipPatch = False
         return{'FINISHED'}
     
+class PatchArchiveTestOperator(Operator):
+    bl_label = "Test Patch Archive"
+    bl_idname = "helldiver2.test_archive_export"
+    bl_description = (
+        "检索 data 目录最大 Patch 序号并 +1 写入；同名骨架/物理运行时文件直接覆盖，"
+        "删除测试 Patch 建议配合管理器使用"
+    )
+
+    def execute(self, context):
+        global Global_gamepath
+        global Global_TocManager
+        global Global_PatchBasePath
+        independent_plan = None
+        independent_physics = None
+        if context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+            try:
+                independent_plan, independent_physics = _prepare_independent_export(context)
+            except Exception as error:
+                self.report({'ERROR'}, str(error))
+                return {'CANCELLED'}
+
+        prefix = (Global_TocManager.ActiveArchive.Name + ".patch_" if independent_plan is not None
+                  else "9ba626afa44a3aa3.patch_")
+
+        search_path = Global_gamepath
+
+        if not os.path.exists(search_path):
+            highest_num = -1
+        else:
+            all_files = os.listdir(search_path)
+            existing_numbers = []
+
+            for f in all_files:
+                if f.startswith(prefix):
+                    suffix = f.split(prefix)[-1]
+                    import re
+                    match = re.search(r'\d+', suffix)
+                    if match:
+                        num = int(match.group())
+                        existing_numbers.append(num)
+                else:
+                    pass
+
+            if existing_numbers:
+                highest_num = max(existing_numbers)
+            else:
+                highest_num = -1
+
+        file_name = f"{prefix}{highest_num + 1}"
+
+        New_path = os.path.join(Global_gamepath, file_name)
+
+        if os.path.exists(New_path):
+            self.report({'ERROR'}, f"文件 {New_path} 已存在,为避免覆盖，停止操作")
+            return {'CANCELLED'}
+
+        if independent_plan is not None and context.scene.Hd2ToolPanelSettings.IndependentIncludePhysics:
+            old_output = Global_PatchBasePath
+            old_manifest = context.scene.get("HD2IR_LastExportManifest")
+            try:
+                runtime_manifest, isolation_manifest = _independent_runtime_companions(independent_plan, independent_physics)
+                runtime_files = test_deployment.runtime_payloads(independent_physics, runtime_manifest, isolation_manifest)
+                def committed(patch_path, runtime_directory):
+                    _write_independent_manifest(context, patch_path, independent_plan, independent_physics,
+                        emit_authoring_json=False, runtime_directory=runtime_directory)
+                receipt = test_deployment.deploy(Global_gamepath, file_name,
+                    lambda target: Global_TocManager.PatchActiveArchive(path=str(target)),
+                    runtime_files, on_committed=committed)
+                Global_PatchBasePath = receipt['patch_path']
+                self.report(
+                    {'INFO'},
+                    f"测试 Mod 已部署：{Global_PatchBasePath}；骨架/物理直接写入 "
+                    f"{receipt['runtime_directory']}；覆盖 {receipt['overwritten']} 个同名文件"
+                )
+                _report_independent_external_materials(self, independent_plan)
+                return {'FINISHED'}
+            except Exception as error:
+                Global_PatchBasePath = old_output
+                if old_manifest is None:
+                    if "HD2IR_LastExportManifest" in context.scene:
+                        del context.scene["HD2IR_LastExportManifest"]
+                else:
+                    context.scene["HD2IR_LastExportManifest"] = old_manifest
+                self.report({'ERROR'}, "测试 Mod 未完成：" + str(error))
+                return {'CANCELLED'}
+
+        Global_TocManager.PatchActiveArchive(path= New_path)
+        New_path = Global_PatchBasePath
+        _write_independent_manifest(
+            context, New_path, independent_plan, independent_physics, emit_authoring_json=False
+        )
+
+        self.report({'INFO'}, f"写入测试Patch完成，最新编号: {file_name},写入路径: {New_path}")
+        _report_independent_external_materials(self, independent_plan)
+        # bpy.context.scene.Hd2ToolPanelSettings.IsZipPatch = False
+        return {'FINISHED'}
+
 class ZipPatchArchiveOperator(Operator,ExportHelper):
     bl_label = "Zip Patch Export"
     bl_idname = "helldiver2.archive_zippatch_export"
@@ -1933,6 +2297,14 @@ class ZipPatchArchiveOperator(Operator,ExportHelper):
         tempdir = tempfile.gettempdir()
         global Global_TocManager
         global Global_PatchBasePath
+        independent_plan = None
+        independent_physics = None
+        if context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+            try:
+                independent_plan, independent_physics = _prepare_independent_export(context)
+            except Exception as error:
+                self.report({'ERROR'}, str(error))
+                return {'CANCELLED'}
         
 
         if bpy.context.scene.Hd2ToolPanelSettings.IsRenamePatch and bpy.context.scene.Hd2ToolPanelSettings.NewPatchName:
@@ -1949,6 +2321,11 @@ class ZipPatchArchiveOperator(Operator,ExportHelper):
             New_path = os.path.join(tempdir, Global_TocManager.ActivePatch.Name)
             Global_TocManager.PatchActiveArchive(path= New_path)
 
+        New_path = Global_PatchBasePath
+        manifest_path = _write_independent_manifest(
+            context, New_path, independent_plan, independent_physics, emit_authoring_json=False
+        )
+
         # 打包文件
         zipfileOutPath = self.filepath
         # if 
@@ -1956,9 +2333,14 @@ class ZipPatchArchiveOperator(Operator,ExportHelper):
             zipf.write(New_path , arcname= os.path.basename(New_path))
             zipf.write(New_path + ".gpu_resources",arcname= os.path.basename(New_path) + ".gpu_resources")
             zipf.write(New_path + ".stream",arcname= os.path.basename(New_path) + ".stream")
+            if independent_plan is not None:
+                physics_pack_path = Path(str(New_path) + ".hd2irpack.zip")
+                if physics_pack_path.is_file():
+                    zipf.write(physics_pack_path, arcname=physics_pack_path.name)
 
         bpy.context.scene.Hd2ToolPanelSettings.IsZipPatch = True
         self.report({'INFO'}, f"patch打包完成,文件保存在{self.filepath}")
+        _report_independent_external_materials(self, independent_plan)
         return {'FINISHED'}
     def invoke(self, context, event):
         # self.filepath = ""
@@ -2372,7 +2754,7 @@ class ImportDumpOperator(Operator, ImportHelper):
         if PatchesNotLoaded(self):
             return {'CANCELLED'}
 
-        print(f"object_id:{self.object_id},type_id:{self.object_typeid}")
+        # print(f"object_id:{self.object_id},type_id:{self.object_typeid}")
         Entries = EntriesFromStrings(self.object_id, self.object_typeid)
         for Entry in Entries:
             ImportDump(self, Entry, self.filepath)
@@ -2452,12 +2834,1488 @@ class ImportStingrayMeshOperator(Operator):
             raise Exception("One or more meshes failed to load")
         return{'FINISHED'}
 
+INDEPENDENT_PROJECT_ID_PROP = "HD2IR_ProjectId"
+INDEPENDENT_SAVED_PLAN_PROP = "HD2IR_LastSavedPackagePlan"
+INDEPENDENT_PHYSICS_REVISION_PROP = "HD2IR_LastSavedPhysicsRevision"
+INDEPENDENT_SAVED_CONTEXTS_PROP = "HD2IR_SavedPackageContexts"
+
+from .hd2_system.armor_cleanup import (
+    retained_cleanup_rows,
+    build_cleanup_plan, make_point_unit, validate_point_unit,
+)
+
+
+def _independent_project_id(scene):
+    project_id = str(scene.get(INDEPENDENT_PROJECT_ID_PROP, "") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", project_id):
+        project_id = uuid.uuid4().hex
+        scene[INDEPENDENT_PROJECT_ID_PROP] = project_id
+    return project_id
+
+
+INDEPENDENT_MATERIAL_PACK_PROP = "HD2SDK_IndependentMaterialPack"
+
+
+@bpy.app.handlers.persistent
+def _forget_material_output_bindings(_dummy=None):
+    """Remove obsolete output-location caches, never open/delete their files.
+
+    Material exports are standalone snapshots of the current authoring Patch.
+    A previous export path is not a source archive or proof of installed data.
+    """
+    for scene in getattr(bpy.data, "scenes", ()):
+        if INDEPENDENT_MATERIAL_PACK_PROP in scene:
+            del scene[INDEPENDENT_MATERIAL_PACK_PROP]
+        settings = getattr(scene, "Hd2ToolPanelSettings", None)
+        if settings is not None and "IndependentMaterialSummary" in settings:
+            del settings["IndependentMaterialSummary"]
+        raw = scene.get("HD2IR_LastExportManifest", "")
+        if raw:
+            try:
+                manifest = json.loads(raw)
+                if isinstance(manifest, dict):
+                    manifest.pop("material_pack", None)
+                    manifest.pop("missing_optional_material_pack", None)
+                    scene["HD2IR_LastExportManifest"] = json.dumps(manifest, ensure_ascii=False)
+            except (ValueError, TypeError):
+                # Other diagnostic metadata is not an export prerequisite.
+                pass
+    Global_TocManager._shared_material_cache = None
+
+
+def _shared_material_entry(manager, file_id, type_id):
+    # Compatibility hook for TocManager; never resolve an authoring resource
+    # from a historical material-output path. Load source patches explicitly.
+    return None
+
+
+def _resource_subset_patch(patch, entries):
+    result = copy.copy(patch)
+    result.TocEntries = [copy.copy(entry) for entry in entries]
+    result.TocDict = {}
+    for entry in result.TocEntries:
+        result.TocDict.setdefault(entry.TypeID, {})[entry.FileID] = entry
+    result.TocTypes = []
+    result.UpdateTypes()
+    return result
+
+
+def _independent_model_export_patch(context, patch, *, omitted_resources=None):
+    if patch is None:
+        raise shared_materials.MaterialPackagingError("没有活动 Patch")
+    current = shared_materials.index_entries(patch.TocEntries)
+    removed = {key:entry for key, entry in current.items() if key[1] in shared_materials.RESOURCE_TYPES}
+    # Material saving is optional for both BODY and HELMET. This is a model-only
+    # operation: leave all authoring resources intact and export their Unit
+    # references even when external material delivery is handled separately.
+    # Model isolation never changes material/texture identity, and does not
+    # consult the location or contents of any earlier material export.
+    shared_materials.external_model_material_ids(
+        patch.TocEntries, Global_TocManager.GetEntryFromGameArchive,
+    )
+    plan = _saved_independent_plan_for_export(context)
+    scoped, omitted = independent_resources.scope_model_entries(
+        plan, [entry for key, entry in current.items() if key not in removed])
+    if omitted_resources is not None:
+        omitted_resources.extend(omitted)
+    isolated = independent_resources.isolate_model_entries(
+        plan, scoped,
+        Global_TocManager.GetEntryFromGameArchive,
+    )
+    return _resource_subset_patch(patch, isolated)
+
+
+def _independent_external_materials(context):
+    scoped, _omitted = independent_resources.scope_model_entries(
+        _saved_independent_plan_for_export(context), Global_TocManager.ActivePatch.TocEntries)
+    return shared_materials.external_model_material_ids(
+        scoped,
+        Global_TocManager.GetEntryFromGameArchive,
+    )
+
+
+def _report_independent_external_materials(operator, plan):
+    if plan and plan.get('omitted_model_resources'):
+        rows = plan['omitted_model_resources']
+        operator.report({'WARNING'}, f'本次仅导出已保存计划；{len(rows)} 个旧模型/无关骨骼表未输出，原制作 Patch 中保留。详见日志')
+        PrettyPrint('本次未输出的制作资源：' + json.dumps(rows, ensure_ascii=False), 'warning')
+    if plan and plan.get("external_material_ids"):
+        ids = plan["external_material_ids"]
+        summary = "、".join(ids[:4]) + ("…" if len(ids) > 4 else "")
+        operator.report({'WARNING'},
+            f"模型已保存；{len(ids)} 个外部材质引用保留原 ID（{summary}），请配套原材质包；无需关联，本次未核验外部文件")
+    elif plan and plan.get("unlinked_authoring_resources"):
+        operator.report({'WARNING'}, "模型已保存；本次不输出材质/贴图，原资源仍保留在制作 Patch，请另行配套材质包；无需关联")
+    elif plan and plan.get("authoring_material_resources"):
+        operator.report({'WARNING'}, "模型已保存；本次不写材质/贴图，制作 Patch 中的材质修改仍保留，请按需另行更新配套材质")
+
+
+def _independent_unlinked_authoring_resources(context):
+    return _independent_authoring_material_resources()
+
+
+def _independent_authoring_material_resources():
+    return [{"id":f"{file_id:016x}", "type":f"{kind:016x}"}
+            for file_id,kind in sorted(shared_materials.index_entries(Global_TocManager.ActivePatch.TocEntries))
+            if kind in shared_materials.RESOURCE_TYPES]
+
+
+class IndependentMaterialPackSaveOperator(Operator, ExportHelper):
+    bl_idname = "helldiver2.independent_material_pack_save"
+    bl_label = "独立保存材质包"
+    bl_description = "把当前制作 Patch 的材质和贴图另存 9ba 包；不记录或关联输出路径，材质 ID 和引用保持原样"
+    filename_ext = ""
+    filter_glob: StringProperty(default="*.patch_*", options={"HIDDEN"})
+    filepath: StringProperty(subtype="FILE_PATH", default="", options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        return Global_TocManager.ActivePatch is not None
+
+    def invoke(self, context, _event):
+        settings = context.scene.Hd2ToolPanelSettings
+        if settings.IsChangeOutPath and settings.NewPatchOutPath:
+            self.filepath = str(Path(bpy.path.abspath(settings.NewPatchOutPath)) / (BaseArchiveHexID+".patch_2"))
+            return self.execute(context)
+        directory = Path(bpy.data.filepath).parent if bpy.data.filepath else Path(tempfile.gettempdir())
+        self.filepath = str(shared_materials.next_pack_path(directory))
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        global Global_PatchBasePath
+        original_output = Global_PatchBasePath
+        try:
+            patch = Global_TocManager.ActivePatch
+            if patch is None:
+                raise shared_materials.MaterialPackagingError("没有活动 Patch")
+            if not self.filepath:
+                raise shared_materials.MaterialPackagingError("请选择材质包输出目录")
+            _forget_material_output_bindings()
+            project_id = _independent_project_id(context.scene)
+            external_refs = set()
+            entries = shared_materials.collect_material_entries(
+                patch.TocEntries, (), external_refs=external_refs)
+            # Include native material dependencies of already saved Units, so
+            # a changed texture is redirected through a private material too.
+            indexed_materials = shared_materials.index_entries(entries)
+            for unit in patch.TocEntries:
+                if unit.TypeID != UnitID:
+                    continue
+                for material_id in shared_materials.unit_material_ids(unit.TocData):
+                    if (material_id,MaterialID) in indexed_materials:
+                        continue
+                    material = Global_TocManager.GetEntryFromGameArchive(material_id,MaterialID)
+                    if material is not None:
+                        indexed_materials[(material_id,MaterialID)] = material
+            entries = list(indexed_materials.values())
+            # Author owns material identities. Model Unit isolation is separate:
+            # preserve every material/texture FileID and texture reference byte.
+            # Do not merge any previous output: it may have been moved,
+            # replaced or belong to another separately supplied material pack.
+            aliases = []
+            external_refs = set(shared_materials.external_texture_ids(entries))
+            directory = Path(bpy.path.abspath(self.filepath)).absolute().parent
+            path = shared_materials.next_pack_path(directory, (p.Name for p in Global_TocManager.Patches))
+            def writer(target, rows):
+                _resource_subset_patch(patch, rows).ToFile(path=str(target))
+            manifest = shared_materials.write_pack(
+                path, entries, project_id, writer, external_refs=external_refs, resource_aliases=aliases,
+                emit_manifest=False)
+            message = "材质包已保存：" + str(path) + "；材质/贴图 ID 与引用保持原样，不随模型重编号"
+            if external_refs:
+                message += f"；保留 {len(external_refs)} 项包外贴图引用，仍需原游戏/原依赖"
+            self.report({'INFO'}, message)
+            return {'FINISHED'}
+        except Exception as error:
+            self.report({'ERROR'}, "材质包未保存：" + str(error))
+            return {'CANCELLED'}
+        finally:
+            Global_PatchBasePath = original_output
+
+
+def _validate_independent_patch_archive_binding():
+    archive = Global_TocManager.ActiveArchive
+    patch = Global_TocManager.ActivePatch
+    if archive is None:
+        raise IndependentPackagingError("没有激活的基础 Archive")
+    if patch is None:
+        raise IndependentPackagingError("没有激活的 Patch，请先为当前 Archive 新建 Patch")
+    match = re.fullmatch(r"(.+)\.patch_\d+", str(patch.Name), re.IGNORECASE)
+    if match is None:
+        raise IndependentPackagingError(
+            "独立封包无法识别当前 Patch 的源 Archive，请为当前 Archive 单独新建 Patch"
+        )
+    patch_archive = match.group(1)
+    archive_name = str(archive.Name)
+    if patch_archive.casefold() != archive_name.casefold():
+        raise IndependentPackagingError(
+            f"当前 Patch 属于 {patch_archive}，当前基础 Archive 是 {archive_name}；"
+            "请为头和身体分别新建 Patch"
+        )
+
+
+def _independent_target_mesh_layouts(plan):
+    """Resolve each target Unit's actual LOD0 mesh/BoneInfo slots read-only."""
+
+    layouts = {}
+    for job in build_save_jobs(plan):
+        unit_id = str(int(job.native_unit_id))
+        if unit_id in layouts:
+            continue
+        entry = Global_TocManager.GetEntryFromGameArchive(int(unit_id), UnitID)
+        if entry is None:
+            raise IndependentPackagingError(
+                f"无法从基础游戏读取目标 Unit {unit_id}"
+            )
+        if not entry.IsLoaded:
+            entry.Load(True, False, True)
+        candidates = [
+            mesh
+            for mesh in entry.LoadedData.RawMeshes
+            if int(mesh.LodIndex) == 0
+        ]
+        if len(candidates) != 1:
+            raise IndependentPackagingError(
+                f"目标 Unit {unit_id} 的 LOD0 网格数量为 {len(candidates)}，"
+                "无法安全自动指定写入槽位"
+            )
+        mesh = candidates[0]
+        mesh_index = int(mesh.MeshInfoIndex)
+        bone_index = int(mesh.DEV_BoneInfoIndex)
+        if bone_index < 0 or bone_index >= len(entry.LoadedData.BoneInfoArray):
+            raise IndependentPackagingError(
+                f"目标 Unit {unit_id} 的 LOD0 BoneInfo 槽位无效：{bone_index}"
+            )
+        mesh_info = entry.LoadedData.MeshInfoArray[mesh_index]
+        transform_index = int(mesh_info.TransformIndex)
+        if (
+            transform_index < 0
+            or transform_index >= len(entry.LoadedData.TransformInfo.TransformMatrices)
+        ):
+            raise IndependentPackagingError(
+                f"目标 Unit {unit_id} 的 LOD0 网格根节点无效：{transform_index}"
+            )
+        layouts[unit_id] = {
+            "native_helpers": {
+                int(helper.MeshInfoIndex): deepcopy(helper)
+                for helper in entry.LoadedData.RawMeshes
+                if helper.CanPreserveNativeStream()
+            },
+            "mesh_index": mesh_index,
+            "bone_index": bone_index,
+            "mesh_transform": entry.LoadedData.TransformInfo.TransformMatrices[
+                transform_index
+            ].ToBlenderMatrix().copy(),
+        }
+    return layouts
+
+
+def _independent_mesh_armature(obj):
+    for modifier in obj.modifiers:
+        if modifier.type == 'ARMATURE' and modifier.object is not None:
+            return modifier.object
+    if obj.parent is not None and obj.parent.type == 'ARMATURE':
+        return obj.parent
+    return None
+
+
+def _independent_source_to_unit_matrix(obj):
+    armature = _independent_mesh_armature(obj)
+    if armature is None:
+        return obj.matrix_world.copy(), None
+    return armature.matrix_world.inverted_safe() @ obj.matrix_world, armature
+
+
+def _independent_object_unit_bounds(obj):
+    source_to_unit, _ = _independent_source_to_unit_matrix(obj)
+    points = [source_to_unit @ vertex.co for vertex in obj.data.vertices]
+    return (
+        tuple(min(point[axis] for point in points) for axis in range(3)),
+        tuple(max(point[axis] for point in points) for axis in range(3)),
+    )
+
+
+def _make_independent_save_copy(obj, target_mesh_transform=None):
+    """Bake a semantic mesh into the target Unit mesh-node coordinate space."""
+
+    save_obj = obj.copy()
+    save_obj.data = obj.data.copy()
+    collections = tuple(obj.users_collection)
+    target_collection = collections[0] if collections else bpy.context.scene.collection
+    target_collection.objects.link(save_obj)
+    save_obj.name = obj.name + "__HD2IR_SAVE"
+
+    source_to_unit, armature = _independent_source_to_unit_matrix(obj)
+    if armature is not None:
+        # mmd_tools uses these as per-vertex metadata, not skin influences.
+        # Remove only known helper groups and only on the disposable copy;
+        # unknown weighted names must still fail instead of hiding rig errors.
+        for name in ("mmd_edge_scale", "mmd_vertex_order"):
+            group = save_obj.vertex_groups.get(name)
+            if group is not None and armature.data.bones.get(name) is None:
+                save_obj.vertex_groups.remove(group)
+    target_mesh_transform = (
+        target_mesh_transform.copy()
+        if target_mesh_transform is not None
+        else mathutils.Matrix.Identity(4)
+    )
+    relative = target_mesh_transform.inverted_safe() @ source_to_unit
+    target_world = target_mesh_transform.copy()
+    if armature is not None:
+        target_world = armature.matrix_world @ target_world
+
+    # The legacy AQ serializer reads mesh-local coordinates but derives bind
+    # matrices from the armature.  Semantic meshes commonly retain PMX/import
+    # rotation, scale, and translation, while each target Unit may also place
+    # LOD0 below a translated mesh node.  Vertices must therefore be converted
+    # from authoring-object space through armature/Unit space into that target
+    # mesh-node's local space.  Work on a disposable copy so the .blend remains
+    # entirely semantic and reversible.
+    save_obj.data.transform(relative, shape_keys=True)
+    save_obj.matrix_world = target_world
+    save_obj["HD2SDK_IndependentExportBonesOnly"] = True
+    return save_obj
+
+
+def _remove_independent_save_copy(save_obj):
+    if save_obj is None:
+        return
+    mesh_data = save_obj.data
+    bpy.data.objects.remove(save_obj, do_unlink=True)
+    if mesh_data.users == 0:
+        bpy.data.meshes.remove(mesh_data)
+
+
+def _make_independent_composite_copy(obj, base_obj, target_mesh_transform=None):
+    """Join only disposable copies; a free choice always includes its slot base."""
+    if base_obj is None:
+        return _make_independent_save_copy(obj, target_mesh_transform)
+    if _independent_mesh_armature(obj) != _independent_mesh_armature(base_obj):
+        raise IndependentPackagingError("同部位基础网格与自由差分必须使用同一骨架")
+    for source in (obj, base_obj):
+        if any(modifier.type != 'ARMATURE' for modifier in source.modifiers):
+            raise IndependentPackagingError(
+                f"{source.name} 仍有非骨架修改器，请手动应用或移除后再合并自由差分；源网格未修改")
+    copies, meshes = [], []
+    try:
+        for source in (obj, base_obj):
+            duplicate = _make_independent_save_copy(source, target_mesh_transform)
+            copies.append(duplicate)
+            meshes.append(duplicate.data)
+            # Do not depend on the authoring collection's visibility/selection.
+            for collection in tuple(duplicate.users_collection):
+                collection.objects.unlink(duplicate)
+            bpy.context.scene.collection.objects.link(duplicate)
+            duplicate.hide_viewport = False
+            duplicate.hide_select = False
+            duplicate.hide_set(False)
+        with bpy.context.temp_override(object=copies[0], active_object=copies[0],
+                selected_objects=copies, selected_editable_objects=copies):
+            result = bpy.ops.object.join()
+        if 'FINISHED' not in result:
+            raise IndependentPackagingError("自由差分与基础网格的临时合并失败")
+        copies[0].select_set(False)
+        return copies[0]
+    except BaseException:
+        for duplicate in copies:
+            try:
+                if duplicate.name in bpy.data.objects:
+                    bpy.data.objects.remove(duplicate, do_unlink=True)
+            except ReferenceError:
+                pass
+        raise
+    finally:
+        for mesh in meshes:
+            try:
+                if mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+            except ReferenceError:
+                pass
+
+
+def _independent_composite_unit_bounds(obj, base_obj):
+    bounds = [_independent_object_unit_bounds(source)
+              for source in (obj, base_obj) if source is not None]
+    return (tuple(min(row[0][axis] for row in bounds) for axis in range(3)),
+            tuple(max(row[1][axis] for row in bounds) for axis in range(3)))
+
+
+def _validate_independent_saved_unit(job, target_layout=None, expected_unit_bounds=None):
+    """Validate the saved stream and keep original authoring object names in errors."""
+    try:
+        _validate_independent_saved_unit_data(job, target_layout, expected_unit_bounds)
+    except Exception as error:
+        raise IndependentPackagingError(format_save_job_error(job, error)) from error
+
+
+def _validate_independent_saved_unit_data(job, target_layout=None, expected_unit_bounds=None):
+    """Reject invalid palettes/weights/coordinates; indices refer to the exported mesh."""
+
+    published_id = job.published_unit_id or job.native_unit_id
+    entry = Global_TocManager.ActivePatch.GetEntry(int(published_id), UnitID)
+    if entry is None or entry.LoadedData is None:
+        raise IndependentPackagingError(
+            f"保存后找不到目标 Unit {published_id}，无法执行骨骼映射校验"
+        )
+    unit = entry.LoadedData
+    for mesh in unit.RawMeshes:
+        lod_index = int(mesh.LodIndex)
+        if lod_index < 0 or not mesh.VertexBoneIndices:
+            continue
+        if lod_index >= len(unit.BoneInfoArray):
+            raise IndependentPackagingError(
+                f"Unit {published_id} 的网格 {mesh.MeshInfoIndex} 引用了无效 BoneInfo {lod_index}"
+            )
+        bone_info = unit.BoneInfoArray[lod_index]
+        original_helper = (target_layout or {}).get("native_helpers", {}).get(int(mesh.MeshInfoIndex))
+        preserved_helper = (
+            original_helper is not None and mesh.CanPreserveNativeStream()
+            and mesh.DEV_NativeVertexBytes == original_helper.DEV_NativeVertexBytes
+            and mesh.Indices == original_helper.Indices
+            and mesh.LodIndex == original_helper.LodIndex
+            and [(c.Type, c.Format, c.Index, c.Unknown) for c in mesh.DEV_NativeComponents]
+                == [(c.Type, c.Format, c.Index, c.Unknown) for c in original_helper.DEV_NativeComponents]
+            and [(m.MatID, m.NumIndices) for m in mesh.Materials]
+                == [(m.MatID, m.NumIndices) for m in original_helper.Materials]
+        )
+        face_cursor = 0
+        for material_index, material in enumerate(mesh.Materials):
+            palette_index = (
+                int(material.DEV_BoneInfoOverride)
+                if material.DEV_BoneInfoOverride is not None
+                else material_index
+            )
+            if palette_index < 0 or palette_index >= len(bone_info.Remaps):
+                raise IndependentPackagingError(
+                    f"Unit {published_id} 的 LOD{lod_index} 材质 {material_index} "
+                    "没有 BoneInfo remap"
+                )
+            remap = bone_info.Remaps[palette_index]
+            face_count = int(material.NumIndices) // 3
+            faces = mesh.Indices[face_cursor:face_cursor + face_count]
+            face_cursor += face_count
+            vertices = {vertex for face in faces for vertex in face}
+            for vertex in sorted(vertices):
+                weights = mesh.VertexWeights[vertex]
+                if isinstance(weights, (int, float)):
+                    weights = [weights]
+                indices = mesh.VertexBoneIndices[0][vertex]
+                if any(not math.isfinite(float(weight)) or float(weight) < 0 or float(weight) > 1 for weight in weights):
+                    raise IndependentPackagingError(
+                        f"Unit {published_id} 的 LOD{lod_index} 材质 {material_index} "
+                        f"导出顶点 {vertex} 包含非法权重"
+                    )
+                total_weight = sum(float(weight) for weight in weights)
+                if not preserved_helper and abs(total_weight - 1.0) > 2.0e-3:
+                    raise IndependentPackagingError(
+                        f"Unit {published_id} 的 LOD{lod_index} 材质 {material_index} "
+                        f"导出顶点 {vertex} 权重和为 {total_weight:.6f}，必须归一化为 1。"
+                        "导出顶点编号可能因拆边、三角化或合并而不同于源网格编号；"
+                        "可在 Batch Tool 的额外工具中检查不规范顶点"
+                    )
+                for influence, weight in enumerate(weights):
+                    if float(weight) <= 1.0e-6 and not preserved_helper:
+                        continue
+                    if int(indices[influence]) < 0 or int(indices[influence]) >= len(remap):
+                        raise IndependentPackagingError(
+                            f"Unit {published_id} 的 LOD{lod_index} 材质 {material_index} "
+                            f"导出顶点 {vertex} 骨索引 {indices[influence]} 超出 remap "
+                            f"长度 {len(remap)}"
+                        )
+
+    if target_layout is not None and expected_unit_bounds is not None:
+        mesh_index = int(target_layout["mesh_index"])
+        candidates = [
+            mesh for mesh in unit.RawMeshes
+            if int(mesh.MeshInfoIndex) == mesh_index and int(mesh.LodIndex) == 0
+        ]
+        if len(candidates) != 1:
+            raise IndependentPackagingError(
+                f"Unit {published_id} 保存后找不到唯一目标 LOD0 网格 {mesh_index}"
+            )
+        target_transform = target_layout["mesh_transform"]
+        points = [
+            target_transform @ mathutils.Vector(position)
+            for position in candidates[0].VertexPositions
+        ]
+        actual_bounds = (
+            tuple(min(point[axis] for point in points) for axis in range(3)),
+            tuple(max(point[axis] for point in points) for axis in range(3)),
+        )
+        error = max(
+            abs(float(actual) - float(expected))
+            for actual_row, expected_row in zip(actual_bounds, expected_unit_bounds)
+            for actual, expected in zip(actual_row, expected_row)
+        )
+        if error > 1.0e-4:
+            raise IndependentPackagingError(
+                f"Unit {published_id} 的 LOD0 网格根节点坐标校验失败，"
+                f"包围盒最大误差 {error:.6f}"
+            )
+
+
+def _independent_semantic_domain(obj):
+    return "HELMET" if str(obj.get("HD2BT_PartSlot", "")) == "Head" else "BODY"
+
+
+def _selected_independent_domain(context):
+    selected = [
+        obj
+        for obj in context.selected_objects
+        if obj.type == "MESH" and "HD2BT_PartSlot" in obj.keys()
+    ]
+    if not selected:
+        raise IndependentPackagingError("请先选择要存储的身体或头盔网格")
+    domains = {_independent_semantic_domain(obj) for obj in selected}
+    if len(domains) > 1:
+        raise IndependentPackagingError("请分别存储头和身体")
+    return next(iter(domains))
+
+
+def _independent_semantic_objects(context, content_domain=None):
+    if content_domain is None:
+        content_domain = _selected_independent_domain(context)
+    if content_domain not in {"BODY", "HELMET"}:
+        raise IndependentPackagingError("已保存的身体/头盔存储范围无效")
+    return [
+        obj
+        for obj in context.scene.objects
+        if obj.type == "MESH" and "HD2BT_PartSlot" in obj.keys()
+        and _independent_semantic_domain(obj) == content_domain
+    ]
+
+
+def _independent_selection_summary(context):
+    """Cheap live selection label; never reuse the last saved plan as preview."""
+    if context.mode != 'OBJECT':
+        return '当前待存储：请先回到物体模式并选择身体或头盔网格'
+    try:
+        domain = _selected_independent_domain(context)
+    except IndependentPackagingError as exc:
+        return '当前待存储：' + str(exc)
+    label = '头盔' if domain == 'HELMET' else '身体'
+    selected = [obj.name for obj in context.selected_objects
+                if obj.type == 'MESH' and 'HD2BT_PartSlot' in obj.keys()]
+    return f"当前待存储：{label}（按网格选择）；选中 {len(selected)} 项"
+
+
+def _build_current_independent_plan(context, content_domain=None):
+    settings = context.scene.Hd2ToolPanelSettings
+    archive = Global_TocManager.ActiveArchive
+    if archive is None:
+        raise IndependentPackagingError("没有激活的基础 Archive")
+    if ".patch_" in str(archive.Path).lower():
+        raise IndependentPackagingError("独立封包模式不能把 Patch 当作源 Archive")
+    if content_domain is None:
+        content_domain = _selected_independent_domain(context)
+    objects = _independent_semantic_objects(context, content_domain)
+    if not objects:
+        raise IndependentPackagingError("场景中没有通过 Batch Tool 指定部位的网格")
+    shape_key_objects = [obj.name for obj in objects if obj.data.shape_keys is not None]
+    if shape_key_objects:
+        raise IndependentPackagingError(
+            "以下网格仍有形态键，请先手动删除形态键后再保存：" + "、".join(shape_key_objects)
+        )
+    missing_from_view_layer = [
+        obj.name
+        for obj in objects
+        if context.view_layer.objects.get(obj.name) is None
+    ]
+    if missing_from_view_layer:
+        raise IndependentPackagingError(
+            "以下语义网格不在当前 View Layer：" + "、".join(missing_from_view_layer)
+        )
+    active_unit_ids = {
+        str(entry.FileID)
+        for entry in archive.TocEntries
+        if entry.TypeID == UnitID
+    }
+    rows = [(obj.name, obj) for obj in objects]
+    plan = build_package_plan(
+        settings.IndependentProjectName,
+        archive.Name,
+        active_unit_ids,
+        rows,
+        project_id=_independent_project_id(context.scene),
+    )
+    if plan.get("content_domain") != content_domain:
+        raise IndependentPackagingError("身体/头盔存储范围与语义部位不一致")
+    from .hd2_system.free_parts import validate_scene_registry
+    batch_settings = getattr(context.scene, 'hd2bt_settings', None)
+    validate_scene_registry(plan, getattr(batch_settings, 'free_difference_groups', ()))
+    # Resolve the active archive to its truthful runtime equipment identity
+    # before any Unit is saved. This keeps an outdated game/catalog pair from
+    # producing a patch that Blender can write but the in-game group selector
+    # cannot safely activate.
+    build_runtime_difference_manifest(plan)
+    return plan
+
+
+def _saved_independent_record(context, *, required=True):
+    _validate_independent_patch_archive_binding()
+    try:
+        record = saved_contexts.find(
+            context.scene.get(INDEPENDENT_SAVED_CONTEXTS_PROP, ''),
+            _independent_project_id(context.scene), Global_TocManager.ActiveArchive.Name,
+            Global_TocManager.ActivePatch.Name)
+        if record is None:
+            # Legacy metadata has no Patch identity. Only accept it when the
+            # actual model/rig and serialized Unit revision prove this binding.
+            legacy = saved_contexts.find(
+                '', _independent_project_id(context.scene), Global_TocManager.ActiveArchive.Name,
+                Global_TocManager.ActivePatch.Name,
+                raw_legacy_plan=context.scene.get(INDEPENDENT_SAVED_PLAN_PROP, ''),
+                raw_legacy_revision=context.scene.get(INDEPENDENT_PHYSICS_REVISION_PROP, ''))
+            if legacy and not required:
+                # A re-save will establish a new revision below. Old cleanup
+                # aliases are inherited only after their actual Unit presence
+                # is checked by _cache_saved_independent_plan.
+                record = legacy
+            elif legacy and legacy.get('physics_revision') is not None:
+                armature, _ = _independent_armature_and_weights(context, legacy['plan'])
+                if armature and legacy['physics_revision'] == _independent_physics_revision(context, legacy['plan'], armature):
+                    record = legacy
+    except saved_contexts.ContextError as error:
+        raise IndependentPackagingError(str(error)) from error
+    if record is None and required:
+        raise IndependentPackagingError('当前项目/Archive/Patch 尚无有效保存记录，请先“保存独立部位与差分”')
+    return record
+
+
+def _snapshot_independent_save_state(context):
+    keys = (INDEPENDENT_SAVED_PLAN_PROP, INDEPENDENT_PHYSICS_REVISION_PROP,
+            INDEPENDENT_SAVED_CONTEXTS_PROP)
+    return ({key: context.scene.get(key) for key in keys},
+            context.scene.Hd2ToolPanelSettings.IndependentPlanSummary)
+
+
+def _restore_independent_save_state(context, snapshot):
+    values, summary = snapshot
+    for key, value in values.items():
+        if value is None:
+            if key in context.scene:
+                del context.scene[key]
+        else:
+            context.scene[key] = value
+    context.scene.Hd2ToolPanelSettings.IndependentPlanSummary = summary
+
+
+def _cache_saved_independent_plan(context, plan):
+    # Preserve other cleanup rows, but newly authored slots supersede their old
+    # point aliases. Stale point resources may remain in the Patch, not exports.
+    previous_record = _saved_independent_record(context, required=False)
+    previous = previous_record['plan'] if previous_record else {}
+    if ("armor_cleanup" not in plan and previous.get("archive_name") == plan.get("archive_name")
+            and previous.get("project_id") == plan.get("project_id")
+            and previous.get("content_domain") == plan.get("content_domain")):
+        rows = retained_cleanup_rows(plan, previous.get("armor_cleanup", []))
+        if rows and all(Global_TocManager.ActivePatch.GetEntry(int(row["point_unit_id"]), UnitID)
+                        is not None for row in rows):
+            plan["armor_cleanup"] = rows
+    armature, _weighted = _independent_armature_and_weights(context, plan)
+    revision = _independent_physics_revision(context, plan, armature) if armature else None
+    serialized_plan = json.dumps(
+        plan,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    serialized_revision = json.dumps(revision, sort_keys=True, allow_nan=False)
+    try:
+        serialized_contexts = saved_contexts.store(
+            context.scene.get(INDEPENDENT_SAVED_CONTEXTS_PROP, ''), plan,
+            Global_TocManager.ActivePatch.Name, revision)
+    except saved_contexts.ContextError as error:
+        raise IndependentPackagingError(str(error)) from error
+    summary = format_plan_summary(plan)
+    context.scene[INDEPENDENT_SAVED_CONTEXTS_PROP] = serialized_contexts
+    context.scene[INDEPENDENT_SAVED_PLAN_PROP] = serialized_plan
+    context.scene[INDEPENDENT_PHYSICS_REVISION_PROP] = serialized_revision
+    context.scene.Hd2ToolPanelSettings.IndependentPlanSummary = summary
+
+
+def _saved_independent_plan_for_export(context):
+    saved = _saved_independent_record(context)['plan']
+    content_domain = saved.get("content_domain")
+    if content_domain not in {"BODY", "HELMET"}:
+        raise IndependentPackagingError("已保存的身体/头盔存储范围无效，请重新保存")
+    _validate_independent_patch_archive_binding()
+    if str(saved.get('archive_name', '')) != str(Global_TocManager.ActiveArchive.Name):
+        saved_label = '头盔' if content_domain == 'HELMET' else '身体'
+        raise IndependentPackagingError(
+            f'上次保存的是{saved_label}，其 Archive 与当前不同。选择 Hips/Head 只改变待保存范围，'
+            '不会重写已经保存的 Patch；请先点击“保存部位/差分”，再导出当前 Patch'
+        )
+    current = _build_current_independent_plan(context, content_domain)
+    authored_saved = {key: value for key, value in saved.items() if key not in {"armor_cleanup", "rig_gender"}}
+    if current != authored_saved:
+        raise IndependentPackagingError("部位、差分组或活动 Archive 已变化，请重新保存独立部位与差分")
+    required = {int(job.published_unit_id or job.native_unit_id) for job in build_save_jobs(saved)}
+    required.update(int(row["point_unit_id"]) for row in saved.get("armor_cleanup", ()))
+    if any(Global_TocManager.ActivePatch.GetEntry(unit_id, UnitID) is None for unit_id in required):
+        raise IndependentPackagingError("当前 Patch 缺少已保存的部位或点网格，请重新保存")
+    return saved
+
+
+def _independent_armature_and_weights(context, plan):
+    semantic_objects = _independent_semantic_objects(
+        context, plan.get("content_domain")
+    )
+    armatures = set()
+    owner_by_object = {}
+    for obj in semantic_objects:
+        candidates = {
+            modifier.object
+            for modifier in obj.modifiers
+            if modifier.type == 'ARMATURE' and modifier.object is not None
+        }
+        if obj.parent is not None and obj.parent.type == 'ARMATURE':
+            candidates.add(obj.parent)
+        if len(candidates) > 1:
+            raise PhysicsPackagingError(f"对象 {obj.name} 同时绑定了多个骨架")
+        owner = next(iter(candidates), None)
+        if owner is not None:
+            armatures.add(owner)
+            owner_by_object[obj.name] = owner
+    if not armatures:
+        return None, {}
+    if len(armatures) != 1:
+        raise PhysicsPackagingError("独立封包的全部语义部位必须共用一个工作骨架")
+    armature = next(iter(armatures))
+    weighted = {}
+    bone_names = set(armature.data.bones.keys())
+    for obj in semantic_objects:
+        if owner_by_object.get(obj.name) not in (None, armature):
+            raise PhysicsPackagingError(f"对象 {obj.name} 没有使用共享工作骨架")
+        positive_group_indices = {
+            group.group
+            for vertex in obj.data.vertices
+            for group in vertex.groups
+            if group.weight > 0.0
+        }
+        names = {
+            obj.vertex_groups[index].name
+            for index in positive_group_indices
+            if index < len(obj.vertex_groups)
+            and obj.vertex_groups[index].name in bone_names
+        }
+        if names:
+            weighted.setdefault(str(obj.get("HD2BT_PartSlot")), set()).update(names)
+    return armature, weighted
+
+
+def _armature_authoring_project(armature, project_id):
+    """Capture authored target geometry; public animation Rest is bundled separately."""
+
+    from .hd2_system.unit_rig_profiles import load_avatar_source
+    source_names = {bone["name"] for bone in load_avatar_source()}
+    shared_bones = []
+    for bone in armature.data.bones:
+        matrix = bone.matrix_local
+        if bone.parent is not None:
+            matrix = bone.parent.matrix_local.inverted() @ matrix
+        shared_bones.append({
+            "name": bone.name,
+            "parent": bone.parent.name if bone.parent is not None else None,
+            "is_avatar_source": bone.name in source_names,
+            "rest_local": [
+                float(matrix[row][column])
+                for row in range(3) for column in range(4)
+            ],
+        })
+    return {
+        "schema": "HD2PhysBoneAuthoringProject1",
+        "project_uuid": str(project_id),
+        "fixed_dt": 1.0 / 60.0,
+        "shared_bones": shared_bones,
+        "chains": [],
+        "colliders": [],
+        "chain_links": [],
+    }
+
+
+def _load_independent_physbone_project(context, armature):
+    settings = context.scene.Hd2ToolPanelSettings
+    if not settings.IndependentIncludePhysics:
+        return None
+    project = getattr(armature.data, "hd2pb_project", None)
+    if project is None or int(getattr(project, "schema_version", 0)) <= 0:
+        return None
+    if len(getattr(project, "chains", ())) == 0 and not len(getattr(project,"pose_drivers",())):
+        return None
+    try:
+        addon = importlib.import_module("HD2PhysBoneTool")
+        adapter = addon.physbone_blender.adapter_v1
+        physbone_core = importlib.import_module("HD2PhysBoneTool.physbone")
+    except (ImportError, AttributeError) as error:
+        raise PhysicsPackagingError(
+            "检测到 PhysBone 项目，但 HD2PhysBoneTool 插件没有启用或版本过旧"
+        ) from error
+    if not hasattr(adapter, "project_document_from_object"):
+        raise PhysicsPackagingError("HD2PhysBoneTool 缺少独立封包桥接接口，请安装与 SDK 配套的插件版本")
+    return (
+        adapter.project_document_from_object(armature),
+        physbone_core.build_v1,
+    )
+
+
+def _independent_solver_scope(plan):
+    return 'shared_body_v2' if plan.get('content_domain') == 'BODY' else 'single_unit'
+
+
+def _scoped_independent_physbone_project(context, plan, armature, weighted):
+    bridge = _load_independent_physbone_project(context, armature)
+    if bridge is None:
+        return None
+    all_weighted = {slot: set(names) for slot, names in weighted.items()}
+    other_domain = "HELMET" if plan.get("content_domain") == "BODY" else "BODY"
+    bone_names = set(armature.data.bones.keys())
+    for obj in _independent_semantic_objects(context, other_domain):
+        owners = {m.object for m in obj.modifiers if m.type == 'ARMATURE' and m.object is not None}
+        if obj.parent is not None and obj.parent.type == 'ARMATURE':
+            owners.add(obj.parent)
+        # Another character, unbound mesh or ambiguous ownership cannot be
+        # used as evidence for excluding a chain from this work armature.
+        if owners != {armature}:
+            continue
+        indices = {g.group for v in obj.data.vertices for g in v.groups if g.weight > 0.0}
+        names = {obj.vertex_groups[i].name for i in indices
+                 if i < len(obj.vertex_groups) and obj.vertex_groups[i].name in bone_names}
+        all_weighted.setdefault(str(obj.get("HD2BT_PartSlot")), set()).update(names)
+    return scope_physics_project(plan, bridge[0], weighted, all_weighted,
+        solver_scope=_independent_solver_scope(plan)), bridge[1]
+
+
+def _independent_physics_revision(context, plan, armature):
+    """Fingerprint model inputs and saved Units, excluding editable physics parameters."""
+    from array import array
+    source = hashlib.sha256()
+    def add(value):
+        source.update(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False).encode('utf8'))
+        source.update(b'\0')
+    add((armature.name, armature.data.name))
+    for bone in armature.data.bones:
+        add((bone.name, bone.parent.name if bone.parent else None, bool(bone.use_deform),
+             bool(bone.get('HD2BT_CustomBone')), [list(row) for row in bone.matrix_local]))
+    unsupported = []
+    for obj in sorted(_independent_semantic_objects(context, plan['content_domain']), key=lambda obj: obj.name):
+        add((obj.name, [list(row) for row in armature.matrix_world.inverted() @ obj.matrix_world],
+             [group.name for group in obj.vertex_groups]))
+        for collection, field, width, kind in ((obj.data.vertices, 'co', 3, 'f'),
+                (obj.data.loops, 'vertex_index', 1, 'i'), (obj.data.polygons, 'loop_total', 1, 'i')):
+            values = array(kind, [0]) * (len(collection) * width)
+            collection.foreach_get(field, values)
+            add((field, len(values))); source.update(values.tobytes())
+        for vertex in obj.data.vertices:
+            source.update(struct.pack('<I', len(vertex.groups)))
+            for group in vertex.groups:
+                source.update(struct.pack('<If', group.group, group.weight))
+        for modifier in obj.modifiers:
+            if modifier.type != 'ARMATURE':
+                unsupported.append(f'{obj.name}/{modifier.name} ({modifier.type})')
+            else:
+                add((modifier.type, modifier.object.name if modifier.object else None,
+                     modifier.show_viewport, modifier.show_render, modifier.use_vertex_groups,
+                     modifier.use_bone_envelopes, modifier.use_deform_preserve_volume,
+                     modifier.vertex_group, modifier.invert_vertex_group, modifier.use_multi_modifier))
+    targets = hashlib.sha256()
+    for unit_id in all_published_unit_ids(plan):
+        entry = Global_TocManager.ActivePatch.GetEntry(unit_id, UnitID)
+        if entry is None:
+            raise PhysicsPackagingError('已保存目标 Unit 缺失，请重新保存独立部位与差分')
+        targets.update(struct.pack('<Q', unit_id))
+        for payload in (entry.TocData, entry.GpuData, entry.StreamData):
+            targets.update(hashlib.sha256(bytes(payload)).digest())
+    return dict(schema='HD2PhysicsUpdateRevision1', project_id=plan['project_id'],
+                archive_name=plan['archive_name'], content_domain=plan['content_domain'],
+                source_sha256=source.hexdigest(), units_sha256=targets.hexdigest(),
+                unsupported_modifiers=unsupported)
+
+
+def export_independent_physics_update(context, armature, filepath=None):
+    """Update the active Patch's saved domain without writing model/material patches.
+
+    The PhysBone export button calls this only in AQSDK independent mode;
+    the companion includes spring physics and/or clothing pose resources. A
+    missing/new bone must be serialized by the normal model save first; existing
+    Unit palette mappings are always read from the actual saved Unit objects.
+    """
+    settings = context.scene.Hd2ToolPanelSettings
+    if not settings.IndependentPackagingMode or not settings.IndependentIncludePhysics:
+        raise PhysicsPackagingError('请启用独立封包模式及“自动整合物理与姿态驱动”后导出配套更新包')
+    plan = _saved_independent_plan_for_export(context)
+    owner, _weighted = _independent_armature_and_weights(context, plan)
+    if owner is not armature:
+        raise PhysicsPackagingError('当前物理骨架与已保存的身体/头盔不一致')
+    previous = _saved_independent_record(context).get('physics_revision')
+    if previous is None:
+        raise PhysicsPackagingError('旧保存记录没有物理更新校验信息，请先重新“保存独立部位与差分”一次')
+    current = _independent_physics_revision(context, plan, armature)
+    if previous != current:
+        raise PhysicsPackagingError('模型、权重、骨架或已保存 Unit 已变化，请先重新“保存独立部位与差分”，再更新物理配套包')
+    if current['unsupported_modifiers']:
+        raise PhysicsPackagingError('快速物理更新暂不支持额外网格修改器，请使用常规封包：' + '、'.join(current['unsupported_modifiers']))
+    compiled = _compile_independent_physics(context, plan)
+    if compiled is None:
+        raise PhysicsPackagingError('当前保存范围没有可导出的运行时骨架')
+    ids = [int(row['unit_id'], 16) for row in compiled['manifest']['units']]
+    difference = build_runtime_difference_manifest(plan, rig_profile_unit_ids=ids)
+    isolation = independent_resources.binding_for_plan(plan, ids)
+    domain_name = '身体' if plan['content_domain'] == 'BODY' else '头盔'
+    summary = dict(content_domain=plan['content_domain'], domain_name=domain_name,
+                   units=len(ids), chains=len(compiled['manifest']['chain_consumers']),
+                   solver_scope=compiled['manifest'].get('solver_scope', 'single_unit'),
+                   physics_files=sum(name.endswith('.hd2phys') for name in compiled['files']),
+                   excluded_chains=compiled.get('export_scope', {}).get('excluded_chains', []),
+                   default_name=f"{plan['archive_name']}.hd2irpack.zip")
+    if filepath is None:
+        return summary
+    suffix = '.hd2irpack.zip'
+    if not str(filepath).lower().endswith(suffix) or len(Path(filepath).name) <= len(suffix):
+        raise PhysicsPackagingError('独立模式必须导出 .hd2irpack.zip 配套包，不是单个 .hd2phys')
+    _write_independent_physics_archive(str(filepath)[:-len(suffix)], compiled, difference, isolation)
+    return summary
+
+
+def _require_publish_rig_gender(context):
+    settings = getattr(context.scene, 'hd2bt_settings', None)
+    gender = getattr(settings, 'publish_rig_gender', 'UNSET')
+    if gender not in {'MALE', 'FEMALE'}:
+        raise IndependentPackagingError('请先在 Batch「导入工作骨架」框选择发布骨架类型（男性/女性）；未设置不能保存 Mod')
+    return gender
+
+
+def _compile_independent_physics(context, plan):
+    from .hd2_system.unit_rig_profiles import load_avatar_source
+
+    plan['rig_gender'] = _require_publish_rig_gender(context)
+    armature, weighted = _independent_armature_and_weights(context, plan)
+    if armature is None:
+        return None
+    bridge = _scoped_independent_physbone_project(context, plan, armature, weighted)
+    skeleton_project = _armature_authoring_project(
+        armature, plan.get("project_id")
+    )
+    source_names = {
+        bone["name"]
+        for bone in skeleton_project["shared_bones"]
+        if bone["is_avatar_source"]
+    }
+    custom_by_unit = required_custom_bones_by_unit(
+        plan, weighted, source_names
+    )
+    if bridge is None:
+        authoring_project = skeleton_project
+        physbone_build = None
+        required_by_unit = {
+            unit_id: custom_by_unit.get(unit_id, frozenset())
+            for unit_id in all_published_unit_ids(plan)
+        }
+    else:
+        authoring_project, physbone_build = bridge
+        required_by_unit = required_profile_bones_by_unit(
+            plan, authoring_project, weighted, solver_scope=_independent_solver_scope(plan)
+        )
+        # Physics and clothing pose add required inputs/targets/colliders;
+        # they do not replace ordinary
+        # weighted custom bones. Unsimulated hair/cloth still needs FK targets.
+        required_by_unit = {
+            unit_id: frozenset(required_by_unit.get(unit_id, ())) |
+                     frozenset(custom_by_unit.get(unit_id, ()))
+            for unit_id in all_published_unit_ids(plan)
+        }
+    authored_name_by_hash = {}
+    for bone in authoring_project["shared_bones"]:
+        name = bone["name"]
+        try:
+            name_hash = int(name)
+        except ValueError:
+            name_hash = murmur32_hash(name.encode("utf-8"))
+        previous = authored_name_by_hash.get(name_hash)
+        if previous is not None and previous != name:
+            raise UnitRigProfileError(
+                f"共享骨架骨名哈希冲突：{previous}、{name}"
+            )
+        authored_name_by_hash[name_hash] = name
+
+    snapshots = []
+    # Diagnostic context only: these labels never enter the serialized Rig.
+    job_by_unit = {int(job.published_unit_id or job.native_unit_id): job
+                   for job in build_save_jobs(plan)}
+    unit_ids = (
+        all_published_unit_ids(plan)
+        if bridge is not None
+        else tuple(sorted(required_by_unit))
+    )
+    for unit_id in unit_ids:
+        entry = Global_TocManager.ActivePatch.GetEntry(unit_id, UnitID)
+        if entry is None:
+            raise UnitRigProfileError(
+                f"Patch 中找不到刚保存的 Unit {unit_id:016x}，请重新执行独立保存"
+            )
+        if entry.LoadedData is None:
+            # A cold-reopened Patch contains serialized Units but no editor
+            # cache. Decode the actual bytes without creating scene objects;
+            # the revision and rig snapshot guards still validate the payload.
+            try:
+                entry.Load(Reload=True, MakeBlendObject=False)
+            except Exception as error:
+                raise UnitRigProfileError(
+                    f"无法读取已保存的 Unit {unit_id:016x}：{error}"
+                ) from error
+        snapshot = snapshot_from_loaded_unit(
+            unit_id,
+            entry.LoadedData,
+            Global_BoneNames,
+            authored_name_by_hash,
+        )
+        job = job_by_unit.get(unit_id)
+        if job is not None:
+            part_name = {"Head": "头盔", "Hips": "腰部", "Torso": "躯干",
+                         "Torso_Armor": "胸甲", "LeftArm": "左臂", "RightArm": "右臂",
+                         "LeftLeg": "左腿", "RightLeg": "右腿"}.get(job.part_slot, job.part_slot)
+            snapshot["source_label"] = f"对象“{job.object_name}” / 部位：{part_name}"
+        snapshots.append(snapshot)
+    rig_document = build_rig_document(
+        authoring_project,
+        snapshots,
+        required_bones_by_unit=required_by_unit,
+        runtime_source_bones=load_avatar_source(),
+        weighted_bones_by_unit={row['unit_id']: weighted.get(row['part_slot'], ())
+                                for row in published_unit_rows(plan)},
+        rig_gender=plan['rig_gender'],
+    )
+    from .hd2_system.clothing_pose import enabled_rules, attach_single_unit_resources, CAPABILITY as POSE_CAPABILITY
+    has_pose=bool(enabled_rules(authoring_project))
+    if bridge is None or (not authoring_project.get("chains") and not has_pose):
+        compiled = compile_rig_pack(plan, rig_document)
+    elif plan.get('content_domain') == 'BODY':
+        from .hd2_system.shared_physics import compile_shared_physics_pack, CAPABILITY_RUNTIME
+        compiled = compile_shared_physics_pack(plan, authoring_project, weighted,
+            weighted, rig_document, physbone_build, runtime_capabilities=(CAPABILITY_RUNTIME,POSE_CAPABILITY))
+    else:
+        compiled = (compile_physics_pack(plan, authoring_project, weighted, rig_document, physbone_build)
+                    if authoring_project.get('chains') else compile_rig_pack(plan,rig_document))
+        compiled = attach_single_unit_resources(compiled,authoring_project,rig_document)
+    compiled["export_scope"] = deepcopy(authoring_project.get("export_scope", {}))
+    if plan.get('content_domain') == 'BODY':
+        from .hd2_system.preview_transport import compile_preview
+        rig_name = compiled['manifest']['rig']['file']
+        preview = compile_preview(plan, rig_document,
+            {int(p['unit_id'], 16): Global_TocManager.ActivePatch.GetEntry(int(p['unit_id'], 16), UnitID)
+             for p in rig_document['profiles']}, rig_name, compiled['files'][rig_name])
+        if preview is not None:
+            compiled['files'][preview[0]] = preview[1]
+            compiled['manifest'].setdefault('runtime_requirements', []).append('preview-transport-v1')
+    settings = context.scene.Hd2ToolPanelSettings
+    companions = _independent_runtime_companions(plan, compiled)
+    author_credit.attach(compiled, plan, test_deployment.runtime_payloads(compiled, *companions),
+                         settings.IndependentAuthorName, settings.IndependentAuthorHomepage)
+    return compiled
+
+
+def _write_independent_physics_archive(patch_path, compiled, runtime_manifest=None, isolation_manifest=None):
+    target = Path(str(patch_path) + ".hd2irpack.zip")
+    if compiled is None and runtime_manifest is None and isolation_manifest is None:
+        if target.exists():
+            target.unlink()
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(
+        prefix=target.name + ".",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
+    os.close(handle)
+    try:
+        exported_at = time.localtime()[:6]
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            files = {} if compiled is None else compiled["files"]
+            for name, data in sorted(files.items()):
+                if name.endswith(".hd2physpack.json"):
+                    continue  # Compiler diagnostics, not a game runtime input.
+                info = zipfile.ZipInfo("HD2IndependentRig/" + name)
+                info.date_time = exported_at
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(info, data)
+            for companion in (runtime_manifest, isolation_manifest):
+                if companion is None:
+                    continue
+                info = zipfile.ZipInfo(
+                    "HD2IndependentRig/" + companion["file_name"]
+                )
+                info.date_time = exported_at
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(
+                    info, companion["text"].encode("utf-8")
+                )
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return target
+
+
+def _prepare_independent_export(context):
+    _require_publish_rig_gender(context)
+    settings = context.scene.Hd2ToolPanelSettings
+    author_credit.validate(settings.IndependentAuthorName, settings.IndependentAuthorHomepage)
+    plan = _saved_independent_plan_for_export(context)
+    omitted = []
+    _independent_model_export_patch(context, Global_TocManager.ActivePatch, omitted_resources=omitted)
+    plan['omitted_model_resources'] = omitted
+    plan["external_material_ids"] = [f"{value:016x}" for value in _independent_external_materials(context)]
+    plan["unlinked_authoring_resources"] = _independent_unlinked_authoring_resources(context)
+    plan["authoring_material_resources"] = _independent_authoring_material_resources()
+    return plan, _compile_independent_physics(context, plan)
+
+
+_INDEPENDENT_RUNTIME_PACK_NOT_PREPARED = object()
+
+
+def _independent_runtime_companions(plan, compiled_physics):
+    profile_units = () if compiled_physics is None else tuple(
+        int(row["unit_id"], 16)
+        for row in compiled_physics["manifest"].get("units", ())
+    )
+    return (
+        build_runtime_difference_manifest(plan, rig_profile_unit_ids=profile_units),
+        independent_resources.binding_for_plan(plan, profile_units),
+    )
+
+
+def _write_independent_manifest(
+    context,
+    patch_path,
+    plan=None,
+    compiled_physics=_INDEPENDENT_RUNTIME_PACK_NOT_PREPARED,
+    *, emit_authoring_json=True, runtime_directory=None,
+):
+    if not context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+        return None
+    plan = plan or _saved_independent_plan_for_export(context)
+    if compiled_physics is _INDEPENDENT_RUNTIME_PACK_NOT_PREPARED:
+        compiled_physics = _compile_independent_physics(context, plan)
+    runtime_manifest, isolation_manifest = _independent_runtime_companions(plan, compiled_physics)
+    if runtime_directory is None:
+        physics_path = _write_independent_physics_archive(
+            patch_path, compiled_physics, runtime_manifest, isolation_manifest
+        )
+    else:
+        physics_path = None
+        for name, payload in test_deployment.runtime_payloads(compiled_physics, runtime_manifest, isolation_manifest).items():
+            if (Path(runtime_directory) / name).read_bytes() != payload:
+                raise test_deployment.TestDeploymentError("测试运行时文件最终回读不一致：" + name)
+    manifest_path = Path(str(patch_path) + ".hd2ir.json")
+    manifest = deepcopy(plan["difference_manifest"])
+    manifest["external_material_ids"] = [f"{value:016x}" for value in _independent_external_materials(context)]
+    manifest["external_material_policy"] = "PRESERVE_IDS_SUPPLIED_SEPARATELY_NOT_VERIFIED"
+    manifest['material_identity_policy'] = 'PRESERVE_AUTHORING_IDS'
+    manifest['rig_gender'] = plan.get('rig_gender')
+    manifest['omitted_model_resources'] = deepcopy(plan.get('omitted_model_resources', []))
+    manifest["unlinked_authoring_resources"] = _independent_unlinked_authoring_resources(context)
+    manifest["authoring_material_resources"] = _independent_authoring_material_resources()
+    manifest["armor_cleanup"] = deepcopy(plan.get("armor_cleanup", []))
+    manifest["runtime_pack"] = physics_path.name if physics_path is not None else None
+    if runtime_directory is not None:
+        manifest["runtime_directory"] = str(runtime_directory)
+        manifest["runtime_files"] = sorted(test_deployment.runtime_payloads(compiled_physics, runtime_manifest, isolation_manifest))
+    # 兼容已读取旧字段的配套工具；新代码以 runtime_pack 为准。
+    manifest["physics_pack"] = physics_path.name if physics_path is not None else None
+    manifest["runtime_difference_manifest"] = (
+        runtime_manifest["file_name"] if runtime_manifest is not None else None
+    )
+    requirements = set(() if compiled_physics is None else
+                       compiled_physics['manifest'].get('runtime_requirements', ()))
+    if runtime_manifest is not None and runtime_manifest.get('requires_runtime'):
+        requirements.add(runtime_manifest['requires_runtime'])
+    if requirements:
+        manifest['runtime_requirements'] = sorted(requirements)
+    manifest["runtime_isolation_manifest"] = isolation_manifest["file_name"]
+    manifest["resource_target_policy"] = independent_resources.POLICY
+    context.scene["HD2IR_LastExportManifest"] = json.dumps(manifest, ensure_ascii=False)
+    if emit_authoring_json:
+        atomic_write_json(manifest_path, manifest)
+        return manifest_path
+    return None
+
+
+
+
+class IndependentPackagePreflightOperator(Operator):
+    bl_label = "预检独立封包"
+    bl_idname = "helldiver2.independent_package_preflight"
+    bl_description = "按当前选择确定身体或头盔，只分析对应部位、差分与活动Archive，不修改Patch"
+
+    def execute(self, context):
+        try:
+            plan = _build_current_independent_plan(context)
+            independent_resources.binding_for_plan(plan)
+            _independent_target_mesh_layouts(plan)
+            summary = format_plan_summary(plan)
+            context.scene.Hd2ToolPanelSettings.IndependentPlanSummary = summary
+            self.report({'INFO'}, "独立封包预检通过：" + summary)
+            return {'FINISHED'}
+        except (IndependentPackagingError, RuntimeManifestError,
+                SDKAdapterError) as error:
+            context.scene.Hd2ToolPanelSettings.IndependentPlanSummary = "预检失败：" + str(error)
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+
+class IndependentPackageSaveOperator(Operator):
+    bl_label = "保存独立部位与差分"
+    bl_idname = "helldiver2.independent_package_save"
+    bl_description = "选身体只存身体，选头盔只存头盔；身体与头盔不能混选保存"
+
+    def execute(self, context):
+        global Global_TocManager
+        if not context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+            self.report({'ERROR'}, "请先开启独立封包模式")
+            return {'CANCELLED'}
+        if context.mode != 'OBJECT':
+            self.report({'ERROR'}, f"请先切换到物体模式；当前模式：{context.mode}")
+            return {'CANCELLED'}
+        if not Global_TocManager.CheckActivePatch():
+            self.report({'ERROR'}, "没有激活的 Patch，请先创建一个 Patch")
+            return {'CANCELLED'}
+
+        try:
+            _validate_independent_patch_archive_binding()
+            domain = _selected_independent_domain(context)
+            gender = _require_publish_rig_gender(context)
+            plan = _build_current_independent_plan(context, domain)
+            plan['rig_gender'] = gender
+            independent_resources.binding_for_plan(plan)
+            jobs = build_save_jobs(plan)
+            target_layouts = _independent_target_mesh_layouts(plan)
+            required_physics_bones = {}
+            armature, weighted = _independent_armature_and_weights(context, plan)
+            bridge = _scoped_independent_physbone_project(context, plan, armature, weighted) if armature else None
+            if bridge is not None:
+                required_physics_bones = required_profile_bones_by_unit(plan, bridge[0], weighted,
+                    solver_scope=_independent_solver_scope(plan))
+        except (IndependentPackagingError, RuntimeManifestError,
+                SDKAdapterError, PhysicsPackagingError) as error:
+            context.scene.Hd2ToolPanelSettings.IndependentPlanSummary = '保存预检失败：' + str(error)
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+        objects = {
+            obj.name: obj
+            for obj in _independent_semantic_objects(
+                context, plan.get("content_domain")
+            )
+        }
+        missing = [name for job in jobs for name in (job.object_name, job.base_object_name)
+                   if name and name not in objects]
+        if missing:
+            self.report({'ERROR'}, "保存计划引用了不存在的对象：" + "、".join(sorted(set(missing))))
+            return {'CANCELLED'}
+
+        active_patch = Global_TocManager.ActivePatch
+        patch_snapshot = deepcopy(active_patch)
+        saved_state_snapshot = _snapshot_independent_save_state(context)
+        patch_index = next(
+            (index for index, patch in enumerate(Global_TocManager.Patches) if patch is active_patch),
+            None,
+        )
+        selected_snapshot = tuple(context.selected_objects)
+        active_object_snapshot = context.view_layer.objects.active
+        target_snapshots = {
+            name: capture_target_properties(obj)
+            for name, obj in objects.items()
+        }
+        visibility_snapshots = {
+            name: (obj.hide_get(), obj.hide_viewport, obj.hide_select)
+            for name, obj in objects.items()
+        }
+        addon_prefs = AQ_PublicClass.get_addon_prefs()
+        try:
+            for job in jobs:
+                obj = objects[job.object_name]
+                save_obj = None
+                try:
+                    target_layout = target_layouts[str(int(job.native_unit_id))]
+                    base_obj = objects.get(job.base_object_name)
+                    expected_unit_bounds = _independent_composite_unit_bounds(obj, base_obj)
+                    save_obj = _make_independent_composite_copy(
+                        obj, base_obj, target_layout["mesh_transform"]
+                    )
+                    save_obj["HD2SDK_RequiredPhysicsBones"] = json.dumps(sorted(
+                        required_physics_bones.get(int(job.published_unit_id or job.native_unit_id), ())))
+                    bpy.ops.object.select_all(action='DESELECT')
+                    save_obj.hide_select = False
+                    save_obj.hide_viewport = False
+                    save_obj.hide_set(False)
+                    mesh_index = target_layout["mesh_index"]
+                    bone_index = target_layout["bone_index"]
+                    apply_temporary_target(
+                        save_obj,
+                        job,
+                        mesh_info_index=mesh_index,
+                        bone_info_index=bone_index,
+                    )
+                    context.view_layer.objects.active = save_obj
+                    save_obj.select_set(True)
+                    result = bpy.ops.helldiver2.archive_mesh_save(object_id=job.native_unit_id)
+                    if 'FINISHED' not in result:
+                        raise RuntimeError(
+                            f"{job.display_name}/{job.part_slot} 保存失败：{job.native_unit_id}"
+                        )
+                    _validate_independent_saved_unit(
+                        job,
+                        target_layout=target_layout,
+                        expected_unit_bounds=expected_unit_bounds,
+                    )
+                except Exception as error:
+                    # Include authoring names for preparation/old saver errors as well.
+                    raise IndependentPackagingError(format_save_job_error(job, error)) from error
+                finally:
+                    _remove_independent_save_copy(save_obj)
+            compiled_physics = _compile_independent_physics(context, plan)
+            _cache_saved_independent_plan(context, plan)
+            # 先继承既有清理路由，再复用手动清理；失败由外层整次保存事务回滚。
+            if getattr(addon_prefs, 'AutoCleanArmor', False) and plan.get('content_domain') == 'BODY':
+                cleaned, added = _apply_independent_armor_cleanup(context, plan)
+                context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
+                    f"；自动清理 {cleaned} 个余下甲片（新增 {added}）"
+                )
+            if compiled_physics is not None:
+                context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
+                    f"；运行时骨架 {len(compiled_physics['manifest']['units'])} 个 Unit / "
+                    f"物理 {len(compiled_physics['manifest']['chain_consumers'])} 条链"
+                )
+                scope = compiled_physics.get("export_scope", {})
+                isolated = set(scope.get("unconsumed_isolated_chains", ()))
+                excluded = set(scope.get("excluded_chains", ())) - isolated
+                if excluded:
+                    context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
+                        f"；另侧 {len(excluded)} 条物理链保留在工程，不参与本次保存"
+                    )
+                if isolated:
+                    context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
+                        f"；{len(isolated)} 条无消费且无外部相互作用的末端链仅跳过导出，工程保留"
+                    )
+        except BaseException as error:
+            if patch_index is not None:
+                Global_TocManager.Patches[patch_index] = patch_snapshot
+            Global_TocManager.ActivePatch = patch_snapshot
+            _restore_independent_save_state(context, saved_state_snapshot)
+            self.report({'ERROR'}, f"独立封包保存失败，Patch 已回滚：{error}")
+            PrettyPrint(traceback.format_exc(), "error")
+            return {'CANCELLED'}
+        finally:
+            for name, obj in objects.items():
+                restore_target_properties(obj, target_snapshots[name])
+                hidden, hidden_viewport, hidden_select = visibility_snapshots[name]
+                obj.hide_select = hidden_select
+                obj.hide_viewport = hidden_viewport
+                obj.hide_set(hidden)
+            bpy.ops.object.select_all(action='DESELECT')
+            for obj in selected_snapshot:
+                if (
+                    context.view_layer.objects.get(obj.name) is not None
+                    and not obj.hide_get()
+                    and not obj.hide_select
+                ):
+                    obj.select_set(True)
+            if (
+                active_object_snapshot is not None
+                and context.view_layer.objects.get(active_object_snapshot.name) is not None
+            ):
+                context.view_layer.objects.active = active_object_snapshot
+
+        self.report(
+            {'INFO'},
+            "独立封包保存完成：" + context.scene.Hd2ToolPanelSettings.IndependentPlanSummary,
+        )
+        return {'FINISHED'}
+
+
+def _apply_independent_armor_cleanup(context, plan):
+    """共享手动/自动清理；调用方必须在同一事务内回滚 Patch 与保存记录。"""
+    manager = Global_TocManager
+    patch = manager.ActivePatch
+    rows = build_cleanup_plan(
+        plan,
+        [entry.FileID for entry in manager.ActiveArchive.TocEntries if entry.TypeID == UnitID],
+        [entry.FileID for entry in patch.TocEntries if entry.TypeID == UnitID],
+    )
+    # Prepare and round-trip EVERY alias before touching the Patch.
+    prepared = []
+    for row in rows:
+        alias = int(row["point_unit_id"])
+        existing = patch.GetEntry(alias, UnitID)
+        if existing is not None:
+            continue
+        source = manager.ActiveArchive.GetEntry(int(row["native_unit_id"]), UnitID)
+        source = deepcopy(source)
+        source.Load(True, False, False)
+        point = make_point_unit(source.LoadedData)
+        toc, gpu = MemoryStream(IOMode="write"), MemoryStream(IOMode="write")
+        point.Serialize(toc, gpu, manager)
+        entry = deepcopy(source)
+        entry.FileID = alias
+        entry.SetData(toc.Data, gpu.Data, b"")
+        entry.IsLoaded = False
+        entry.Load(True, False, False)
+        validate_point_unit(entry.LoadedData)
+        prepared.append(entry)
+    plan["armor_cleanup"] = rows
+    build_runtime_difference_manifest(plan)
+    if plan.get('resource_target_policy') == independent_resources.POLICY:
+        independent_resources.binding_for_plan(plan)
+    for entry in prepared:
+        patch.AddEntry(entry, ReloadUI=False)
+    _cache_saved_independent_plan(context, plan)
+    patch.UpdateTypes()
+    return len(rows), len(prepared)
+
+
+class IndependentArmorCleanupOperator(Operator):
+    bl_label = "一键清理未存储甲片"
+    bl_idname = "helldiver2.independent_armor_cleanup"
+    bl_description = "先保存部位/差分；清理当前护甲中未被本次保存计划覆盖的全部部位（含未用胸甲），不修改共享原资源"
+
+    def execute(self, context):
+        if not context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+            self.report({'ERROR'}, "请先开启独立封包模式")
+            return {'CANCELLED'}
+        try:
+            plan = deepcopy(_saved_independent_plan_for_export(context))
+            manager = Global_TocManager
+            patch = manager.ActivePatch
+            snapshot = deepcopy(patch)
+            saved_state_snapshot = _snapshot_independent_save_state(context)
+            try:
+                count, added = _apply_independent_armor_cleanup(context, plan)
+            except BaseException:
+                for index, candidate in enumerate(manager.Patches):
+                    if candidate is patch:
+                        manager.Patches[index] = snapshot
+                manager.ActivePatch = snapshot
+                _restore_independent_save_state(context, saved_state_snapshot)
+                raise
+            self.report({'INFO'}, f"已独立清理 {count} 个甲片（新增 {added}）；请重新导出 Patch 和配套运行时包")
+            return {'FINISHED'}
+        except Exception as error:
+            self.report({'ERROR'}, f"甲片清理未完成：{error}")
+            PrettyPrint(traceback.format_exc(), "error")
+            return {'CANCELLED'}
+
+
 class SaveStingrayMeshOperator(Operator):
     bl_label  = "Save Mesh"
     bl_idname = "helldiver2.archive_mesh_save"
-    bl_options = {'REGISTER', 'UNDO'} 
+    bl_options = {'REGISTER', 'UNDO'}
     bl_description = "保存网格，必须选择一个网格物体"
-    
+
     @classmethod
     def poll(cls, context):
         object = context.active_object
@@ -2466,8 +4324,21 @@ class SaveStingrayMeshOperator(Operator):
     object_id: StringProperty()
     def execute(self, context):
         global Global_BoneNames
-        addon_prefs = AQ_PublicClass.get_addon_prefs()
+        scn = context.scene
         object = bpy.context.active_object
+        if (
+            scn.Hd2ToolPanelSettings.IndependentPackagingMode
+            and object is not None
+            and not object.get("HD2SDK_IndependentExportBonesOnly", False)
+        ):
+            if "HD2BT_PartSlot" not in object.keys():
+                self.report(
+                    {'ERROR'},
+                    "独立封包模式下请先选择已指定部位的身体或头盔网格",
+                )
+                return {'CANCELLED'}
+            return bpy.ops.helldiver2.independent_package_save()
+        addon_prefs = AQ_PublicClass.get_addon_prefs()
         # 检查Patch
         has_patch =  Global_TocManager.CheckActivePatch()
         if not has_patch:
@@ -2476,19 +4347,13 @@ class SaveStingrayMeshOperator(Operator):
         if context.mode != 'OBJECT':
             self.report({'ERROR'}, f"不在物体模式下，当前模式: {context.mode}，保存取消")
             return {'CANCELLED'}
-        if addon_prefs.SaveUseAutoSmooth:
-            # 4.3 compatibility change
-            if bpy.app.version[0] >= 4 and bpy.app.version[1] >= 1:
-                bpy.ops.object.shade_auto_smooth(angle=3.14159)
-                
-            else:
-                bpy.ops.object.use_auto_smooth = True
-                bpy.context.object.data.auto_smooth_angle = 3.14159
         if object == None:
             self.report({"ERROR"}, "没有物体被选中，必须先选择一个物体再点击保存")
             return {'CANCELLED'}
-        
-        
+        if addon_prefs.SaveUseAutoSmooth:
+            _enable_full_mesh_smoothing(object.data)
+
+
         try:
             ID = object["Z_ObjectID"]
         except:
@@ -2497,7 +4362,7 @@ class SaveStingrayMeshOperator(Operator):
         # 材质名称检查与修正
         for idx in range(len(object.material_slots)):
             CheckValidMaterial(object,idx)
-        
+
         # SwapID = ""
         SwapID_list = []
         try:
@@ -2508,9 +4373,9 @@ class SaveStingrayMeshOperator(Operator):
             if object["Z_SwapID"] != "":
                 object["Z_SwapID_0"] = object["Z_SwapID"]
                 del object["Z_SwapID"]
-        
+
         SwapID_keys = [key for key in object.keys() if key.startswith("Z_SwapID_")]
-        
+
         if SwapID_keys:
             for key in SwapID_keys:
                 if object[key] != "" :
@@ -2519,14 +4384,16 @@ class SaveStingrayMeshOperator(Operator):
                     else:
                         self.report({"ERROR"}, f"Object: {object.name} 的转换ID: {object[key]} 不是纯数字.")
                         return {'CANCELLED'}
-                    
-        model = GetObjectsMeshData(Global_TocManager, Global_BoneNames)
+
         Entry = Global_TocManager.GetEntryByLoadArchive(int(ID), UnitID)
         if Entry is None:
             self.report({'ERROR'},
                 f"存档中需要保存的条目没有载入. 找不到物体ID: {ID}")
             return{'CANCELLED'}
-        if not Entry.IsLoaded: Entry.Load(True, False)
+        Entry.Load(True, False, True)
+        # 先 deepcopy 入 patch 并改用 patch 副本，后续修改/保存都作用在副本上
+        Entry = Global_TocManager.AddEntryToPatchID(Entry, int(ID))
+        model = GetObjectsMeshData(Global_TocManager, Global_BoneNames)
         meshes = model[ID]
         for mesh_index, mesh in meshes.items():
             try:
@@ -2540,8 +4407,8 @@ class SaveStingrayMeshOperator(Operator):
                 self.report({'ERROR'}, f"MeshInfoIndex of {mesh_index} for {object.name} 超过了网格数量。预期最大 MeshInfoIndex 为: {excpectedLength}。请检查自定义属性是否匹配此值并重新保存网格。")
                 return{'CANCELLED'}
 
-            
-        
+
+
         have_self_id = False
         # 转换ID检查与修正
         if SwapID_list:
@@ -2555,46 +4422,38 @@ class SaveStingrayMeshOperator(Operator):
                 #将其放到末尾
                 SwapID_list.append(ID)
 
-            wasSaved = Entry.Save()
-            
-            if not wasSaved:
-                self.report({"ERROR"}, f"保存失败 unit {bpy.context.selected_objects[0].name}.")
-                return{'CANCELLED'}
-            
+            # 为每个转换ID创建 patch 副本并保存（自身ID在列表末尾时也会保存自身ID）。
+            # 不再直接保存加载归档里的原始条目，避免其残留 IsModified。
             for SwapID in SwapID_list:
-
-                if not Global_TocManager.IsInPatch(Entry):
-                    Global_TocManager.AddEntryToPatch(int(ID), UnitID)
-                        # bpy.ops.helldiver2.archive_addtopatch(object_id = str(ID),object_typeid = str(UnitID))
-
-                Entry_In_patch = Global_TocManager.GetPatchEntry(Entry)
-                if SwapID != ID:
-                    self.report({'INFO'}, f"转移 Entry ID: {Entry.FileID} to: {SwapID}")
-                    Global_TocManager.RemoveEntryFromPatch(int(SwapID), UnitID)
-                    Entry_In_patch.FileID = int(SwapID)
-                else:
+                if SwapID == ID:
+                    target_entry = Entry
                     self.report({'INFO'}, f"Entry ID: {Entry.FileID} 保持自身")
+                else:
+                    # 其他转换ID：deepcopy 当前（已修改）条目 → 新 patch 副本（FileID=SwapID）
+                    self.report({'INFO'}, f"转移 Entry ID: {Entry.FileID} to: {SwapID}")
+                    target_entry = Global_TocManager.AddEntryToPatchID(Entry, int(SwapID))
 
+                wasSaved = target_entry.Save()
+                if not wasSaved:
+                    self.report({"ERROR"}, f"保存失败 unit {bpy.context.selected_objects[0].name}.")
+                    return{'CANCELLED'}
+
+                skip = False
+
+            # 自身ID不在转换列表时，移除前面临时加入的自身ID条目（只保存到转换ID，不保存自身ID）
             if not have_self_id:
-                # 快速手动回滚，遗留修改的原因暂未知，目前拿这个应付一下
-                Ori_Entry = Global_TocManager.GetEntry(int(ID), UnitID)
-                if Ori_Entry and Ori_Entry.IsModified:
-                    Ori_Entry.UndoModifiedData()
-                # print(f"Ori_Entry IsModified: {Ori_Entry.IsModified}")
-                
-        
+                Global_TocManager.RemoveEntryFromPatch(int(ID), UnitID)
+
+
         else:
-            # Global_TocManager.Save(int(self.object_id), UnitID)
+            # 无转换ID：Entry 已在前面 AddEntryToPatchID 时加入 patch（FileID=ID），直接保存副本
             wasSaved = Entry.Save()
-            if wasSaved:
-                if not Global_TocManager.IsInPatch(Entry):
-                    Entry = Global_TocManager.AddEntryToPatch(int(ID), UnitID)
-            else:
+            if not wasSaved:
                 self.report({"ERROR"}, f"保存失败 unit {bpy.context.selected_objects[0].name}.")
                 return{'CANCELLED'}
             self.report({'INFO'}, f"已保存 Unit Object ID: {self.object_id}")
 
-        
+
         return{'FINISHED'}
 
 class BatchSaveStingrayMeshOperator(Operator):
@@ -2608,11 +4467,14 @@ class BatchSaveStingrayMeshOperator(Operator):
 
 
     def execute(self, context):
+        if context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+            return bpy.ops.helldiver2.independent_package_save()
         start = time.time()
         errors = False
         objects = bpy.context.selected_objects
         addon_prefs = AQ_PublicClass.get_addon_prefs()
-        
+        AutoLods = bpy.context.scene.Hd2ToolPanelSettings.AutoLods
+        scn = context.scene
         # 检查Patch
         has_patch =  Global_TocManager.CheckActivePatch()
         if not has_patch:
@@ -2632,13 +4494,7 @@ class BatchSaveStingrayMeshOperator(Operator):
         if addon_prefs.SaveUseAutoSmooth:
             for i in objects:
                 if i.type == "MESH":
-                    # 4.3 compatibility change
-                    if bpy.app.version[0] >= 4 and bpy.app.version[1] >= 1:
-                        i.data.shade_smooth()
-                    else:
-                        i.data.use_auto_smooth = True
-                        i.data.auto_smooth_angle = 3.14159
-        # bpy.ops.object.select_all(action='DESELECT')
+                    _enable_full_mesh_smoothing(i.data)
         
         IDs = []
         for object in objects:
@@ -2677,109 +4533,104 @@ class BatchSaveStingrayMeshOperator(Operator):
 
 
         entries = []
-        for IDitem in IDs:
+        for i, IDitem in enumerate(IDs):
             ID = IDitem[0]
             # SwapID_list = IDitem[1]
             Entry = Global_TocManager.GetEntryByLoadArchive(int(ID), UnitID)
             if Entry is None:
                 self.report({'ERROR'}, f"保存的网格对应的档案未加载。无法找到 ID: {ID} 的自定义属性对象。")
-                errors = True
-                num_meshes -= len(MeshData[ID])
-                entries.append(None)
-                continue
-            if not Entry.IsLoaded: Entry.Load(True, False, True)
+                # MeshData is built below. Do not reference it on a failed
+                # archive lookup or continue into serialization without a Unit.
+                return {'CANCELLED'}
+            Entry.Load(True, False, True)
+            # 先 deepcopy 入 patch 并改用 patch 副本，避免改脏加载归档里的原始条目
+            Entry = Global_TocManager.AddEntryToPatchID(Entry, int(ID))
             entries.append(Entry)
 
-        MeshData = GetObjectsMeshData(Global_TocManager, Global_BoneNames)    
-        for i, IDitem in enumerate(IDs):
-            ID = IDitem[0]
-            SwapID_list = IDitem[1]
-            Entry = entries[i]
-            if Entry is None:
-                continue
-            
-            MeshList = MeshData[ID]
-            
-            have_self_id = False
-            if SwapID_list:
-                # 预先检查是否有自身ID,有就放到末尾
-                if ID in SwapID_list:
-                    if SwapID_list.count(ID) > 1:
-                        self.report({"ERROR"}, f"Object ID 为 {ID} 的转换ID栏最多只能填一次自身ID.")
-                        return {'CANCELLED'}
-
-                    have_self_id = True
-                    SwapID_list.remove(ID)
-                    #将其放到末尾
-                    SwapID_list.append(ID)
+        # print(f"IDs: {IDs} selected_objects: {bpy.context.selected_objects}")
+        if IDs and bpy.context.selected_objects:
+            MeshData = GetObjectsMeshData(Global_TocManager, Global_BoneNames)
+            for i, IDitem in enumerate(IDs):
+                ID = IDitem[0]
+                SwapID_list = IDitem[1]
+                Entry = entries[i]
+                if Entry is None:
+                    continue
                 
-                for mesh_index, mesh in MeshList.items():
-                    try:
-                        if Entry.LoadedData.RawMeshes[mesh_index].DEV_BoneInfoIndex == -1 and mesh.DEV_BoneInfoIndex > -1:
-                            self.report({'ERROR'},
-                                        f"尝试用有权重网格覆盖静态网格，请检查网格是否正确。")
-                            return{'CANCELLED'}
-                        Entry.LoadedData.RawMeshes[mesh_index] = mesh
-                    except IndexError:
-                        excpectedLength = len(Entry.LoadedData.RawMeshes) - 1
-                        self.report({'ERROR'},f"MeshInfoIndex of {mesh_index} 超过了网格数量。预期最大 MeshInfoIndex 为: {excpectedLength}。请检查自定义属性是否匹配此值并重新保存网格。")
-                        errors = True
-                        num_meshes -= 1
-    
-                wasSaved = Entry.Save()
-                if not wasSaved:
-                    self.report({"ERROR"}, f"Object ID 为 {ID} 的物体保存失败 ")
-                    num_meshes -= len(MeshData[ID])
-                    # return{'CANCELLED'}
+                MeshList = MeshData[ID]
                 
-                for SwapID in SwapID_list:
-                    
-                    if not Global_TocManager.IsInPatch(Entry):
-                        Global_TocManager.AddEntryToPatch(int(ID), UnitID)
-                        print(f"Add Entry ID: {Entry.FileID} to Patch")
+                have_self_id = False
+                if SwapID_list:
+                    # 预先检查是否有自身ID,有就放到末尾
+                    if ID in SwapID_list:
+                        if SwapID_list.count(ID) > 1:
+                            self.report({"ERROR"}, f"Object ID 为 {ID} 的转换ID栏最多只能填一次自身ID.")
+                            return {'CANCELLED'}
 
-                    Entry_In_patch = Global_TocManager.GetPatchEntry_B(int(ID), UnitID)
+                        have_self_id = True
+                        SwapID_list.remove(ID)
+                        #将其放到末尾
+                        SwapID_list.append(ID)
                     
-                    if SwapID != ID:
-                        self.report({'INFO'}, f"转移 Entry ID: {Entry_In_patch.FileID} to: {SwapID}")
-                        
-                        Global_TocManager.RemoveEntryFromPatch(int(SwapID), UnitID)
-                        Entry_In_patch.FileID = int(SwapID)
-                        # print(f"is in patch: {Global_TocManager.IsInPatch(Entry)}")
-                    else:
-                        self.report({'INFO'}, f"Entry ID: {Entry.FileID} 保持自身")
-                        
-                if not have_self_id:
-                    # 快速手动回滚，遗留修改的原因暂未知，拿这个应付一下
-                    Ori_Entry = Global_TocManager.GetEntryByLoadArchive(int(ID), UnitID)
-                    if Ori_Entry and Ori_Entry.IsModified:
-                        Ori_Entry.UndoModifiedData()
-            
-            else:
-                for mesh_index, mesh in MeshList.items():
-                    try:
-                        if Entry.LoadedData.RawMeshes[mesh_index].DEV_BoneInfoIndex == -1 and mesh.DEV_BoneInfoIndex > -1:
-                            self.report({'ERROR'},
-                                        f"尝试用有权重网格覆盖静态网格，请检查网格是否正确。")
-                            return{'CANCELLED'}
-                        Entry.LoadedData.RawMeshes[mesh_index] = mesh
-                    except IndexError:
-                        excpectedLength = len(Entry.LoadedData.RawMeshes) - 1
-                        self.report({'ERROR'},f"MeshInfoIndex of {mesh_index} 超过了网格数量。预期最大 MeshInfoIndex 为: {excpectedLength}。请检查自定义属性是否匹配此值并重新保存网格。")
-                        errors = True
-                        num_meshes -= 1
-                        
-                wasSaved = Entry.Save()
-                if wasSaved:
-                    if not Global_TocManager.IsInPatch(Entry):
-                        Entry = Global_TocManager.AddEntryToPatch(int(ID), UnitID)
+                    for mesh_index, mesh in MeshList.items():
+                        try:
+                            if Entry.LoadedData.RawMeshes[mesh_index].DEV_BoneInfoIndex == -1 and mesh.DEV_BoneInfoIndex > -1:
+                                self.report({'ERROR'},
+                                            f"尝试用有权重网格覆盖静态网格，请检查网格是否正确。")
+                                return{'CANCELLED'}
+                            Entry.LoadedData.RawMeshes[mesh_index] = mesh
+                        except IndexError:
+                            excpectedLength = len(Entry.LoadedData.RawMeshes) - 1
+                            self.report({'ERROR'},f"MeshInfoIndex of {mesh_index} 超过了网格数量。预期最大 MeshInfoIndex 为: {excpectedLength}。请检查自定义属性是否匹配此值并重新保存网格。")
+                            errors = True
+                            num_meshes -= 1
+
+                    # 为每个转换ID创建 patch 副本并保存（自身ID在列表末尾时也会保存自身ID）。
+                    for SwapID in SwapID_list:
+                        if SwapID == ID:
+                            target_entry = Entry
+                            self.report({'INFO'}, f"Entry ID: {Entry.FileID} 保持自身")
+                        else:
+                            # 其他转换ID：deepcopy 当前（已修改）条目 → 新 patch 副本（FileID=SwapID）
+                            self.report({'INFO'}, f"转移 Entry ID: {Entry.FileID} to: {SwapID}")
+                            target_entry = Global_TocManager.AddEntryToPatchID(Entry, int(SwapID))
+
+                        wasSaved = target_entry.Save()
+                        if not wasSaved:
+                            self.report({"ERROR"}, f"Object ID 为 {ID} 的物体保存失败 ")
+                            num_meshes -= len(MeshData[ID])
+
+                        skip = False
+
+                    # 自身ID不在转换列表时，移除前面临时加入的自身ID条目（只保存到转换ID，不保存自身ID）
+                    if not have_self_id:
+                        Global_TocManager.RemoveEntryFromPatch(int(ID), UnitID)
+
+
                 else:
-                    self.report({"ERROR"}, f"Object ID 为 {ID} 的物体保存失败 ")
-                    num_meshes -= len(MeshData[ID])
-                # for valid_obj in valid_object_list:
-                #     valid_obj.select_set(True)
-                    
-                # Global_TocManager.Save(int(ID), UnitID)
+                    for mesh_index, mesh in MeshList.items():
+                        try:
+                            if Entry.LoadedData.RawMeshes[mesh_index].DEV_BoneInfoIndex == -1 and mesh.DEV_BoneInfoIndex > -1:
+                                self.report({'ERROR'},
+                                            f"尝试用有权重网格覆盖静态网格，请检查网格是否正确。")
+                                return{'CANCELLED'}
+                            Entry.LoadedData.RawMeshes[mesh_index] = mesh
+                        except IndexError:
+                            excpectedLength = len(Entry.LoadedData.RawMeshes) - 1
+                            self.report({'ERROR'},f"MeshInfoIndex of {mesh_index} 超过了网格数量。预期最大 MeshInfoIndex 为: {excpectedLength}。请检查自定义属性是否匹配此值并重新保存网格。")
+                            errors = True
+                            num_meshes -= 1
+
+                    # 无转换ID：Entry 已在前面 AddEntryToPatchID 时加入 patch（FileID=ID），直接保存副本
+                    wasSaved = Entry.Save()
+                    if not wasSaved:
+                        self.report({"ERROR"}, f"Object ID 为 {ID} 的物体保存失败 ")
+                        num_meshes -= len(MeshData[ID])
+                    # for valid_obj in valid_object_list:
+                    #     valid_obj.select_set(True)
+
+                    # Global_TocManager.Save(int(ID), UnitID)
+
         self.report({'INFO'}, f"成功保存 {num_meshes}/{num_initially_selected} 个网格。")
         if errors:
             self.report({'ERROR'}, f"保存网格时发生错误。请点击这里查看。")
@@ -2796,6 +4647,7 @@ class BatchSaveStingrayMeshOperator(Operator):
 class SaveTextureFromBlendImageOperator(Operator):
     bl_label = "Save Texture"
     bl_idname = "helldiver2.texture_saveblendimage"
+    bl_description = "使用blender文件中相同ID名称的图片进行保存，图片格式必须是tga"
 
     object_id: StringProperty()
     def execute(self, context):
@@ -2804,11 +4656,17 @@ class SaveTextureFromBlendImageOperator(Operator):
             if Entry != None:
                 if not Entry.IsLoaded: Entry.Load()
                 try:
-                    BlendImageToStingrayTexture(bpy.data.images[str(self.object_id)], Entry.LoadedData)
-                except:
-                    PrettyPrint("No blend texture was found for saving, using original", "warn"); pass
+                    BlendImageToStingrayTexture(bpy.data.images[self.check_img_name(str(Entry.FileID))], Entry.LoadedData)
+                except Exception as e:
+                    PrettyPrint("No blend texture was found for saving, using original", "warn")
+                    traceback.print_exc()
             Global_TocManager.Save(Entry.FileID, TexID)
         return{'FINISHED'}
+
+    def check_img_name(self, object_id):
+        for img in bpy.data.images:
+            if object_id in img.name and img.filepath.lower().endswith('.tga'):
+                return img.name
 
 # import texture from archive button
 class ImportTextureOperator(Operator):
@@ -3130,7 +4988,7 @@ class SaveStingrayAnimationOperator(Operator):
             self.report({'ERROR'}, "Please select an armature")
             return {'CANCELLED'}
         action_name = object.animation_data.action.name
-        if len(object.animation_data.action.fcurves) == 0:
+        if not iter_action_fcurves(object.animation_data.action):
             self.report({'ERROR'}, f"Action: {action_name} has no keyframe data! Make sure your animation has at least an initial keyframe with a recorded pose.")
             return {'CANCELLED'}
         entry_id = action_name.split(" ")[0].split("_")[0].split(".")[0]
@@ -3142,32 +5000,435 @@ class SaveStingrayAnimationOperator(Operator):
             PrettyPrint(f"Encountered animation error: {e}", 'error')
             self.report({'ERROR'}, f"Armature: {object.name} is missing HD2 custom property: BonesID")
             return{'CANCELLED'}
+        action = object.animation_data.action
         PrettyPrint(f"Getting Animation Entry: {entry_id}")
-        animation_entry = Global_TocManager.GetEntryByLoadArchive(int(entry_id), AnimationID)
-        if not animation_entry:
+        source_animation_entry = Global_TocManager.GetEntryByLoadArchive(int(entry_id), AnimationID)
+        if not source_animation_entry:
             self.report({'ERROR'}, f"Could not find animation entry for Action: {action_name} as EntryID: {entry_id}. Assure your action name starts with a valid ID for the animation entry.")
             return{'CANCELLED'}
-        if not animation_entry.IsLoaded: animation_entry.Load(True, False)
-        bones_entry = Global_TocManager.GetEntryByLoadArchive(int(bones_id), BoneID)
+        if not source_animation_entry.IsLoaded:
+            source_animation_entry.Load(True, False)
+
+        bones_entry = Global_TocManager.GetEntry(int(bones_id), BoneID, SearchAll=True, IgnorePatch=False)
+        if bones_entry is None:
+            self.report({'ERROR'}, f"Could not find bones entry: {bones_id}")
+            return {'CANCELLED'}
+        if not bones_entry.IsLoaded:
+            bones_entry.Load(False, False)
+        current_bone_names = list(bones_entry.LoadedData.Names)
+        if not current_bone_names:
+            self.report({'ERROR'}, "当前动画骨表为空；已取消保存，以免覆盖 Patch 中已有动画。")
+            return {'CANCELLED'}
+
+        current_signature = action_animation_signature(action)
+        current_bone_signature = json.dumps(
+            current_bone_names, ensure_ascii=False, separators=(",", ":")
+        )
+        imported_signature = action.get("HD2SDK_ImportedSignature")
+        imported_bone_signature = action.get("HD2SDK_ImportedBoneNames")
+
+        if imported_signature is not None:
+            action_changed = current_signature != imported_signature
+            bone_table_changed = current_bone_signature != imported_bone_signature
+        else:
+            # Older .blend files have no import baseline. In that case, require
+            # either meaningful motion beyond the initial pose or a bone table
+            # that differs from the original archive.
+            action_changed = action_has_motion_changes(action)
+            source_bones_entry = Global_TocManager.GetEntryByLoadArchive(int(bones_id), BoneID)
+            if source_bones_entry is not None and not source_bones_entry.IsLoaded:
+                source_bones_entry.Load(False, False)
+            source_hashes = (
+                list(source_bones_entry.LoadedData.BoneHashes)
+                if source_bones_entry is not None else []
+            )
+            bone_table_changed = list(bones_entry.LoadedData.BoneHashes) != source_hashes
+
+        if not action_changed and not bone_table_changed:
+            self.report({"WARNING"},
+                "Action 与动画骨表都没有变化，已取消保存，避免覆盖 Patch 中提前制作好的动画。")
+            return {'CANCELLED'}
+
         bones_data = bones_entry.TocData
+
+        # Build into a detached copy and replace the patch entry only after the
+        # complete animation has serialized successfully. A failed save must not
+        # delete or reset an animation that was already authored in the patch.
+        patch_animation_entry = Global_TocManager.GetPatchEntry_B(int(entry_id), AnimationID)
+        base_animation_entry = (patch_animation_entry if patch_animation_entry is not None else source_animation_entry)
+        animation_entry = deepcopy(base_animation_entry)
+        if not animation_entry.IsLoaded:
+            animation_entry.Load(True, False)
         try:
             animation_entry.LoadedData.load_from_armature(context, object, bones_data)
         except AnimationException as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
-        wasSaved = animation_entry.Save()
-        if wasSaved:
-            if not Global_TocManager.IsInPatch(animation_entry):
-                animation_entry = Global_TocManager.AddEntryToPatch(int(entry_id), AnimationID)
-            else:
-                Global_TocManager.RemoveEntryFromPatch(int(entry_id), AnimationID)
-                animation_entry = Global_TocManager.AddEntryToPatch(int(entry_id), AnimationID)
-        else:
+        except Exception as e:
+            PrettyPrint(f"Failed to build animation {entry_id}: {e}", 'error')
+            traceback.print_exc()
+            self.report({'ERROR'}, f"Failed to build animation: {e}. See Console for details.")
+            return {'CANCELLED'}
+        try:
+            wasSaved = animation_entry.Save()
+        except Exception as e:
+            PrettyPrint(f"Failed to serialize animation {entry_id}: {e}", 'error')
+            traceback.print_exc()
+            self.report({'ERROR'}, f"Failed to serialize animation: {e}. See Console for details.")
+            return {'CANCELLED'}
+        if not wasSaved:
             self.report({"ERROR"}, f"Failed to save animation for armature {bpy.context.selected_objects[0].name}.")
             return{'CANCELLED'}
+
+        animation_entry = Global_TocManager.AddEntryToPatchID(animation_entry, int(entry_id))
+        action["HD2SDK_ImportedSignature"] = current_signature
+        action["HD2SDK_ImportedBoneNames"] = current_bone_signature
+        action["HD2SDK_SourceAnimationID"] = str(entry_id)
         self.report({'INFO'}, f"Saved Animation")
         return {'FINISHED'}
 
+#region Operators: XAML
+
+class ImportXAMLOperator(Operator, ImportHelper):
+    bl_label = "Import XAML"
+    bl_idname = "helldiver2.xaml_import"
+    bl_description = "Overwrite current entry with a XAML file"
+
+    filename_ext = ".xaml"
+    filter_glob: StringProperty(default="*.xaml", options={'HIDDEN'})
+
+    object_id: StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        if PatchesNotLoaded(self):
+            return {'CANCELLED'}
+
+        EntryIDs = IDsFromString(self.object_id)
+        for EntryID in EntryIDs:
+            Entry = Global_TocManager.GetEntryByLoadArchive(int(EntryID), XamlID)
+            if Entry.IsLoaded == False:
+                Entry.Load()
+
+            # 先 deepcopy 入 patch 并改用 patch 副本，避免改脏加载归档里的原始条目
+            Entry = Global_TocManager.AddEntryToPatchID(Entry, int(EntryID))
+
+            with open(self.filepath, 'r+b') as f:
+                Entry.LoadedData.xamlData = f.read()
+
+            Entry.Save()
+
+            self.report({'INFO'}, f"Imported Xaml File: {self.filepath}")
+
+        # Redraw
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D": area.tag_redraw()
+        return{'FINISHED'}
+
+class ExportXAMLOperator(Operator):
+    bl_label = "Export XAML"
+    bl_idname = "helldiver2.xaml_export"
+    bl_description = "Export as a XAML file"
+
+    directory: StringProperty(name="Outdir Path",description="xaml output dir")
+    filter_folder: BoolProperty(default=True,options={"HIDDEN"})
+
+    object_id: StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        if PatchesNotLoaded(self):
+            return {'CANCELLED'}
+
+        EntryIDs = IDsFromString(self.object_id)
+        for EntryID in EntryIDs:
+            Entry = Global_TocManager.GetEntryByLoadArchive(int(EntryID), XamlID)
+            if Entry.IsLoaded == False:
+                Entry.Load()
+
+            FileName = f"{Entry.FileID}.xaml"
+            path = self.directory + FileName
+            with open(path, 'w+b') as f:
+                f.write(Entry.LoadedData.xamlData)
+
+            self.report({'INFO'}, f"Exported Xaml File: {path}")
+
+        # Redraw
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D": area.tag_redraw()
+
+        return{'FINISHED'}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+#endregion
+
+#region Operators: Lua
+
+def _require_active_lua_patch(operator):
+    """Lua 写入操作只修改活动 Patch，绝不直接覆盖游戏 data。"""
+    if Global_TocManager.ActivePatch is None:
+        operator.report({'ERROR'}, "没有活动的 Patch；请先创建或载入一个 Patch")
+        return False
+    return True
+
+
+def _read_lua_input_file(filepath):
+    """读取明文、裸 LuaJIT 或旧版 Raw Dump，并验证其正文格式。"""
+    with open(filepath, "rb") as lua_file:
+        raw_data = lua_file.read()
+    payload, version, had_resource_header = normalize_lua_input(raw_data)
+
+    # LuaJIT 字节码无法按 UTF-8 检查；其他输入必须是可读的明文 Lua。
+    if not is_luajit_bytecode(payload):
+        decode_lua_source(payload)
+    return payload, version, had_resource_header
+
+
+def _get_or_copy_lua_patch_entry(file_id):
+    """取得 Patch 中的 Lua；不存在时只从未修改的游戏归档复制。"""
+    patch_entry = Global_TocManager.ActivePatch.GetEntry(file_id, LuaID)
+    if patch_entry is not None:
+        return patch_entry
+
+    source_entry = Global_TocManager.GetEntryFromGameArchive(file_id, LuaID)
+    if source_entry is None:
+        raise LuaResourceError(
+            f"找不到游戏原版 Lua 条目 {file_id}；请先载入包含它的基础 Archive"
+        )
+    return Global_TocManager.AddEntryToPatchID(source_entry, file_id)
+
+
+def _redraw_lua_ui(context):
+    """文件操作完成后刷新 3D 视图侧栏。"""
+    screen = getattr(context, "screen", None)
+    if screen is None:
+        return
+    for area in screen.areas:
+        if area.type == "VIEW_3D":
+            area.tag_redraw()
+
+
+class ImportLuaOperator(Operator, ImportHelper):
+    bl_label = "导入 Lua"
+    bl_idname = "helldiver2.lua_import"
+    bl_description = "导入明文 Lua、裸 LuaJIT 或带 Stingray 头的旧版 Raw Dump"
+
+    filename_ext = ".lua"
+    filter_glob: StringProperty(
+        default="*.lua;*.luajit;*.bin", options={'HIDDEN'}
+    )
+    object_id: StringProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        if not _require_active_lua_patch(self):
+            return {'CANCELLED'}
+
+        try:
+            payload, input_version, had_resource_header = _read_lua_input_file(
+                self.filepath
+            )
+        except (OSError, LuaResourceError) as error:
+            self.report({'ERROR'}, f"Lua 读取失败：{error}")
+            return {'CANCELLED'}
+
+        entry_ids = IDsFromString(self.object_id)
+        if not entry_ids:
+            self.report({'ERROR'}, "没有指定要覆盖的 Lua 条目")
+            return {'CANCELLED'}
+
+        imported_count = 0
+        for entry_id in entry_ids:
+            try:
+                entry = _get_or_copy_lua_patch_entry(entry_id)
+
+                # 明文/裸字节码没有版本字段时，沿用目标条目的资源版本。
+                version = input_version
+                if not had_resource_header:
+                    try:
+                        unused_payload, version = unpack_lua_resource(entry.TocData)
+                    except LuaResourceError:
+                        pass
+
+                resource_data = pack_lua_resource(payload, version)
+                entry.SetData(resource_data, b"", b"", IsModified=True)
+                entry.LoadedData = StingrayLua().FromResource(resource_data)
+                entry.IsLoaded = True
+                imported_count += 1
+            except (LuaResourceError, RuntimeError, ValueError) as error:
+                self.report({'ERROR'}, f"Lua 条目 {entry_id} 导入失败：{error}")
+
+        if imported_count == 0:
+            return {'CANCELLED'}
+
+        self.report(
+            {'INFO'},
+            f"已导入 {imported_count} 个 Lua 条目，并自动补齐 Stingray 资源头",
+        )
+        _redraw_lua_ui(context)
+        return {'FINISHED'}
+
+
+class ExportLuaOperator(Operator):
+    bl_label = "导出 Lua"
+    bl_idname = "helldiver2.lua_export"
+    bl_description = "导出 VS Code 可读 Lua；字节码会同时保留为 .luajit"
+
+    directory: StringProperty(
+        name="导出目录", description="Lua 导出目录", subtype='DIR_PATH'
+    )
+    filter_folder: BoolProperty(default=True, options={'HIDDEN'})
+    object_id: StringProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        entry_ids = IDsFromString(self.object_id)
+        if not entry_ids:
+            self.report({'ERROR'}, "没有指定要导出的 Lua 条目")
+            return {'CANCELLED'}
+
+        output_dir = Path(bpy.path.abspath(self.directory))
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self.report({'ERROR'}, f"无法创建导出目录：{error}")
+            return {'CANCELLED'}
+
+        exported_count = 0
+        for entry_id in entry_ids:
+            entry = Global_TocManager.GetEntry(entry_id, LuaID, SearchAll=True)
+            if entry is None:
+                self.report({'ERROR'}, f"找不到 Lua 条目 {entry_id}")
+                continue
+
+            friendly_stem = str(entry_id)
+            if entry_id == BOOT_LUA_FILE_ID:
+                friendly_stem += "_boot"
+
+            try:
+                editable, bytecode, strings_report, version = make_editable_export(
+                    entry.TocData, friendly_stem
+                )
+                (output_dir / f"{friendly_stem}.lua").write_bytes(editable)
+                if bytecode is not None:
+                    (output_dir / f"{friendly_stem}.luajit").write_bytes(bytecode)
+                    (output_dir / f"{friendly_stem}.strings.txt").write_bytes(
+                        strings_report
+                    )
+                exported_count += 1
+            except (OSError, LuaResourceError) as error:
+                self.report({'ERROR'}, f"Lua 条目 {entry_id} 导出失败：{error}")
+
+        if exported_count == 0:
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"已导出 {exported_count} 个 VS Code 可读 Lua 文件")
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+
+class RebuildBootLuaOperator(Operator, ImportHelper):
+    bl_label = "重建 Boot Patch"
+    bl_idname = "helldiver2.lua_rebuild_boot"
+    bl_description = "把当前游戏原版 boot 与你的扩展脚本自动合并到活动 Patch"
+
+    filename_ext = ".lua"
+    filter_glob: StringProperty(
+        default="*.lua;*.luajit;*.bin", options={'HIDDEN'}
+    )
+
+    def execute(self, context):
+        if not _require_active_lua_patch(self):
+            return {'CANCELLED'}
+
+        try:
+            custom_payload, unused_version, unused_header = _read_lua_input_file(
+                self.filepath
+            )
+
+            # 已生成的完整包装器会再次执行 boot，不能当作“扩展脚本”递归合并。
+            if not is_luajit_bytecode(custom_payload):
+                custom_source = decode_lua_source(custom_payload)
+                generated_markers = (
+                    "HD2SDK AQ Modified 自动重建的 boot.lua",
+                    "此文件由 HD2SDK AQ Modified 自动生成",
+                )
+                if any(marker in custom_source for marker in generated_markers):
+                    raise LuaResourceError(
+                        "选择的是插件生成的完整包装器；重建 Boot 时请只选择你自己写的扩展脚本"
+                    )
+
+            # 关键点：始终读取游戏原版 boot，不能拿 Patch 中已合并的 boot 再套一层。
+            original_entry = Global_TocManager.GetEntryFromGameArchive(
+                BOOT_LUA_FILE_ID, LuaID
+            )
+            if original_entry is None:
+                raise LuaResourceError(
+                    "找不到当前游戏原版 boot；请先载入/索引游戏 data 中包含 boot 的 Archive"
+                )
+
+            original_payload, original_version = unpack_lua_resource(
+                original_entry.TocData
+            )
+            merged_payload = make_boot_wrapper(
+                original_payload, custom_payload, os.path.basename(self.filepath)
+            )
+            resource_data = pack_lua_resource(merged_payload, original_version)
+
+            # override=True 会用新的原版合并结果替换旧 Boot Patch，避免无限嵌套。
+            patch_entry = Global_TocManager.AddEntryToPatchID(
+                original_entry, BOOT_LUA_FILE_ID
+            )
+            patch_entry.SetData(resource_data, b"", b"", IsModified=True)
+            patch_entry.LoadedData = StingrayLua().FromResource(resource_data)
+            patch_entry.IsLoaded = True
+        except (OSError, LuaResourceError, RuntimeError, ValueError) as error:
+            self.report({'ERROR'}, f"Boot Patch 重建失败：{error}")
+            return {'CANCELLED'}
+
+        self.report(
+            {'INFO'},
+            "已从当前游戏原版 boot 合并扩展脚本；写入 Patch 后即可测试",
+        )
+        _redraw_lua_ui(context)
+        return {'FINISHED'}
+
+
+class CreateBootLuaTemplateOperator(Operator, ExportHelper):
+    bl_label = "创建 Boot 扩展模板"
+    bl_idname = "helldiver2.lua_create_boot_template"
+    bl_description = "创建只包含自定义逻辑的 UTF-8 明文 Lua 模板"
+
+    filename_ext = ".lua"
+    filter_glob: StringProperty(default="*.lua", options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            self.filepath = "custom_boot.lua"
+        return ExportHelper.invoke(self, context, event)
+
+    def execute(self, context):
+        template = (
+            "-- HD2SDK AQ Modified：Boot 扩展脚本模板\n"
+            "-- 这里只写你自己的逻辑，不要复制或粘贴原版 boot。\n"
+            "-- 插件的“重建 Boot Patch”会自动先执行当前游戏原版 boot，再执行本文件。\n"
+            "-- 游戏更新后，请重新运行一次“重建 Boot Patch”。\n\n"
+            "print(\"[HD2SDK Lua] 自定义 Boot 扩展已加载\")\n\n"
+            "-- 在下面继续编写你的 Lua 逻辑：\n"
+        )
+        try:
+            with open(self.filepath, "wb") as template_file:
+                template_file.write(template.encode("utf-8"))
+        except OSError as error:
+            self.report({'ERROR'}, f"Boot 模板保存失败：{error}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"已创建 Boot 扩展模板：{self.filepath}")
+        return {'FINISHED'}
+
+#endregion
 
 #region Operators: Clipboard Functionality
 
@@ -3243,7 +5504,9 @@ class ManuallyLoadArchivesOperator(Operator):
 
     archive_id: StringProperty(name="Archive ID")
     
-
+    @classmethod
+    def poll(cls, context):
+        return True
     
     def execute(self, context):
         global Global_TocManager
@@ -3395,6 +5658,9 @@ class SearchArchivesOperator(Operator):
         "视频",
     ]
     
+    @classmethod
+    def poll(cls, context):
+        return True
     
     def draw(self, context):
         global Global_updatearchivelistCN_list
@@ -3508,7 +5774,7 @@ class ArchiveSpreadsheetOperator(Operator):
     bl_description = "打开绝地潜兵2中文Archive 收集表"
 
     def execute(self, context):
-        url = "https://www.kdocs.cn/l/csRnAs7QlZvQ"
+        url = "https://www.kdocs.cn/l/clp6j0afkUYN"
         webbrowser.open(url, new=0, autoraise=True)
         return{'FINISHED'}
 
@@ -3653,36 +5919,151 @@ def CustomPropertyContext(self, context):
     layout.operator("helldiver2.paste_custom_properties", icon= 'PASTEDOWN')
     layout.separator()
     layout.operator("helldiver2.archive_animation_save", icon='ARMATURE_DATA')
-    # if bpy.context.object.type == "ARMATURE":
-    #     if bpy.context.object.get("StateMachineID", None) is not None:
-    #         layout.operator("helldiver2.search_animations", text="查找该骨架的动画", icon='VIEWZOOM').state_machine_id = bpy.context.object.get("StateMachineID")
+    if bpy.context.object.type == "ARMATURE":
+        if bpy.context.object.get("StateMachineID", None) is not None:
+            layout.operator("helldiver2.search_animations", text="查找该骨架的动画", icon='VIEWZOOM').state_machine_id = bpy.context.object.get("StateMachineID")
 
     layout.operator("helldiver2.archive_mesh_batchsave", icon= 'FILE_BLEND')
+
+def CustomBoneContext(self, context):
+    layout = self.layout
+    layout.separator()
+    layout.label(text=Global_SectionHeader)
+    layout.separator()
+    layout.operator("helldiver2.set_bone_animated", text="设置骨骼为动画状态", icon='ARMATURE_DATA').value = True
+    layout.operator("helldiver2.set_bone_animated", text="设置骨骼为非动画状态", icon='ARMATURE_DATA').value = False
+    layout.operator("helldiver2.add_light", text="添加 HD2 灯光", icon='OUTLINER_OB_LIGHT')
        
-# class SearchArmatureAnimationsOperator(Operator):
-#     bl_label = "Search Animations"
-#     bl_idname = "helldiver2.search_animations"
-#     bl_description = "查找该骨架的动画"
+class SearchArmatureAnimationsOperator(Operator):
+    bl_label = "Search Animations"
+    bl_idname = "helldiver2.search_animations"
+    bl_description = "从当前激活的Archive中查找该骨架的动画"
+
+    state_machine_id: StringProperty(default="0")
+
+    def execute(self, context):
+        context.scene.Hd2ToolPanelSettings.SearchField = self.state_machine_id
+        global Global_Foldouts
+        # print(Global_Foldouts)
+        for key in Global_Foldouts:
+            key[1] = (key[0] == str(AnimationID))
+        return {"FINISHED"}
     
-#     state_machine_id: StringProperty(default="0")
+class SetBoneAnimatedOperator(Operator):
+    bl_label = "Set bone animated state"
+    bl_idname = "helldiver2.set_bone_animated"
+    bl_description = "Sets selected bones' animated state"
     
-#     def execute(self, context):
-#         context.scene.Hd2ToolPanelSettings.SearchField = self.state_machine_id
-#         global Global_Foldouts
-#         # print(Global_Foldouts)
-#         for key in Global_Foldouts:
-#             key[1] = (key[0] == str(AnimationID))
-#         return {"FINISHED"} 
+    value: BoolProperty(default=True)
+    def execute(self, context):
+        if bpy.context.object.mode != "EDIT":
+            return {"FINISHED"}
+        for bone in bpy.context.selected_bones:
+            bone["Animated"] = self.value
+        return {"FINISHED"}
+
+
+def _hd2_light_unit_ids_for_armature(armature_object):
+    unit_ids = set()
+    for candidate in bpy.data.objects:
+        if candidate.type != "MESH" or "Z_ObjectID" not in candidate:
+            continue
+        if any(
+            modifier.type == "ARMATURE" and modifier.object is armature_object
+            for modifier in candidate.modifiers
+        ):
+            unit_ids.add(str(candidate["Z_ObjectID"]))
+    return sorted(
+        unit_ids,
+        key=lambda value: (0, int(value)) if value.isdigit() else (1, value),
+    )
+
+
+class AddHD2LightOperator(Operator):
+    bl_label = "添加 HD2 灯光"
+    bl_idname = "helldiver2.add_light"
+    bl_description = "在当前编辑骨上创建可随 Unit 保存的 HD2 聚光灯"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    unit_id: StringProperty(
+        name="目标 Unit ID",
+        description="灯光只会写入这个 Unit；合并骨架时必须明确指定",
+        default="",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.active_object is not None
+            and context.active_object.type == "ARMATURE"
+            and context.active_object.mode == "EDIT"
+            and context.active_bone is not None
+        )
+
+    def invoke(self, context, event):
+        unit_ids = _hd2_light_unit_ids_for_armature(context.active_object)
+        if not unit_ids:
+            self.report({'ERROR'}, "当前骨架没有关联可保存的 Unit 网格")
+            return {'CANCELLED'}
+        if len(unit_ids) == 1:
+            self.unit_id = unit_ids[0]
+            return self.execute(context)
+        self.unit_id = unit_ids[0]
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        unit_ids = _hd2_light_unit_ids_for_armature(context.active_object)
+        self.layout.label(text="当前骨架关联多个 Unit，请指定灯光归属")
+        self.layout.label(text="可用 ID：" + ", ".join(unit_ids))
+        self.layout.prop(self, "unit_id")
+
+    def execute(self, context):
+        armature_object = context.active_object
+        bone = context.active_bone
+        unit_ids = _hd2_light_unit_ids_for_armature(armature_object)
+        if len(unit_ids) == 1 and not self.unit_id:
+            self.unit_id = unit_ids[0]
+        if self.unit_id not in unit_ids:
+            self.report({'ERROR'}, "目标 Unit ID 不属于当前骨架")
+            return {'CANCELLED'}
+
+        while True:
+            light_name = f"Light_{r.randint(1, 0xFFFFFFFF)}"
+            if light_name not in bpy.data.objects and light_name not in bpy.data.lights:
+                break
+        light_hash = murmur32_hash(light_name.encode("utf-8"))
+
+        blender_light = bpy.data.lights.new(name=light_name, type="SPOT")
+        if hasattr(blender_light, "use_custom_distance"):
+            blender_light.use_custom_distance = True
+        blender_light.cutoff_distance = 50.0
+        blender_light.energy = 1000.0
+        blender_light.show_cone = True
+        blender_light["Volumetric"] = False
+        blender_light["Direct Lighting"] = True
+
+        light_object = bpy.data.objects.new(light_name, blender_light)
+        # Text preserves the full unsigned 32-bit range on every supported
+        # Blender build; the save path converts it back to an integer.
+        light_object["HD2SDK_LightNameHash"] = str(light_hash)
+        light_object["HD2SDK_LightUnitID"] = self.unit_id
+        light_object.lock_rotation = (True, True, True)
+        light_object.lock_location = (True, True, True)
+        light_object.lock_scale = (True, True, True)
+        light_object.parent = armature_object
+        light_object.parent_type = "BONE"
+        light_object.parent_bone = bone.name
+        light_object.matrix_parent_inverse = mathutils.Matrix.Rotation(
+            math.pi / 2.0, 4, "X"
+        )
+
+        target_collection = context.collection or context.scene.collection
+        target_collection.objects.link(light_object)
+        return {"FINISHED"}
 #endregion
 
 
 #region Menus and Panels
-def all_archives_UndoModified():
-    if Global_TocManager.LoadedArchives:
-        for Archive in Global_TocManager.LoadedArchives:
-            for Entry in Archive.TocEntries:
-                if Entry != None and Entry.IsModified:
-                    Entry.UndoModifiedData()
 
 
 def update_abs_path(self, context):
@@ -3693,8 +6074,15 @@ def update_abs_path(self, context):
         # 覆盖原值
         self["NewPatchOutPath"] = abs_path
 
+def ChangeActivePatch(self, context):
+    Global_TocManager.SetActivePatchByName(self.Patches)
+
+def ChangeActiveArchive(self, context):
+    Global_TocManager.SetActiveByName(self.LoadedArchives)
+
+
 def LoadedArchives_callback(scene, context):
-    items = [(Archive.Name,Archive.Name , "") for Archive in Global_TocManager.LoadedArchives]
+    items = [(Archive.Name,GetArchiveNameFromID_EN(Archive.Name) if GetArchiveNameFromID_EN(Archive.Name) != "" else Archive.Name, Archive.Name) for Archive in Global_TocManager.LoadedArchives]
     return items
 
 def Patches_callback(scene, context):
@@ -3702,11 +6090,11 @@ def Patches_callback(scene, context):
 
 class Hd2ToolPanelSettings(PropertyGroup):
     # Patches
-    Patches   : EnumProperty(name="Patches", items=Patches_callback)
+    Patches   : EnumProperty(name="Patches", items=Patches_callback, update=ChangeActivePatch)
     PatchOnly : BoolProperty(name="Show Patch Entries Only", description = "仅显示当前补丁中存在的条目", default = False)
     # Archive
     ContentsExpanded : BoolProperty(default = True)
-    LoadedArchives   : EnumProperty(name="LoadedArchives", items=LoadedArchives_callback)
+    LoadedArchives   : EnumProperty(name="LoadedArchives", items=LoadedArchives_callback, update=ChangeActiveArchive)
     # Settings
     MenuExpanded     : BoolProperty(default = False)
     ShowMeshes       : BoolProperty(name="Meshes", description = "Show Meshes", default = True)
@@ -3731,20 +6119,51 @@ class Hd2ToolPanelSettings(PropertyGroup):
     shadervariablesUI : BoolProperty(name="Shader Variables UI", description = "显示着色器变量参数UI", default = True)
     LegacyWeightNames     : BoolProperty(name="Legacy Weight Names", description="使用旧版顶点组权重名称", default = False)
     GenerateRandomTextureIDs : BoolProperty(name="Generate Random Texture IDs", description = "保存材质时为导入的纹理生成随机ID，关闭将不改变ID。\n对于保存多个引用贴图相同只是材质参数不同的材质，可以关闭生成随机ID", default = True)
-
+    IndependentPackagingMode : BoolProperty(
+        name="独立封包模式",
+        description="按当前选择区分身体与头盔，查找对应Archive内的Unit并生成基础组/差分组运行时清单",
+        default=False,
+    )
+    IndependentIncludePhysics : BoolProperty(
+        name="自动整合物理与姿态驱动",
+        description=(
+            "若共享工作骨架上存在 HD2PhysBoneTool 项目，则在保存时自动解析实际 Unit "
+            "场景图，按需生成弹簧物理 hd2phys 与衣物姿态驱动 hd2pose，纯姿态项目也可导出；"
+            "关闭会同时排除这两类资源，独立辅助骨使用的 rigbin 仍会自动生成"
+        ),
+        default=True,
+    )
+    IndependentProjectName : StringProperty(
+        name="独立项目名称",
+        description="显示在运行时清单中的项目名；项目UUID会另行随Blend保存以隔离Unit ID",
+        default="独立护甲项目",
+    )
+    IndependentAuthorName : StringProperty(name="作者署名", default="", maxlen=80,
+        description="可选作者声明，随最终配套包保存")
+    IndependentAuthorHomepage : StringProperty(name="作者主页（可选）", default="", maxlen=512,
+        description="HTTP/HTTPS 地址")
+    IndependentPlanSummary : StringProperty(
+        name="独立封包状态",
+        default="尚未预检",
+        options={'HIDDEN'},
+    )
     # ShadeSmooth      : BoolProperty(name="Shade Smooth", description = "导入模型时平滑着色,开启此项将关闭自动平滑", default = True)
     # Search
     SearchField : StringProperty(default = "")
-    
+    LuaPanel : BoolProperty(default=False)
     # add
     IsRenamePatch : BoolProperty(name="RenamePatch",default = False,description = "重命名patch")
     IsChangeOutPath : BoolProperty(name="ChangeOutPath",default = False,description = "修改输出路径")
     NewPatchName : StringProperty(name="NewPatchName",default = "")
     NewPatchOutPath : StringProperty(name="NewOutPath",default = "",subtype='DIR_PATH',update=update_abs_path)
     IsZipPatch : BoolProperty(name="ZipPatch",default = False,description = "压缩patch")
+    debug_parent_mat : BoolProperty(name="Debug Parent Mat", description="调试用，打印父材质ID", default=False)
+
+Hd2ToolPanelSettings.__annotations__.update(runtime_group_ui.SETTINGS_PROPERTIES)
+
 
 class HellDivers2ToolsPanel(Panel):
-    bl_label = f"Helldivers 2 AQ Modified {bl_info['version'][0]}.{bl_info['version'][1]}.{bl_info['version'][2]}"
+    bl_label = f"HD2SDK AQ Edition {VERSION_TEXT}"
     bl_idname = "SF_PT_Tools"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -3758,6 +6177,8 @@ class HellDivers2ToolsPanel(Panel):
         if Entry.IsLoaded:
             mat = Entry.LoadedData
             if mat.DEV_ShowEditor:
+                if scene.Hd2ToolPanelSettings.debug_parent_mat:
+                    print("parent mat:",GetEntryParentMaterialID(Entry))
                 for i, t in enumerate(mat.TexIDs):
                     row = layout.row(); row.separator(factor=2.0)
                     ddsPath = mat.DEV_DDSPaths[i]
@@ -3827,6 +6248,9 @@ class HellDivers2ToolsPanel(Panel):
         elif Entry.TypeID == AnimationID:
             row.operator("helldiver2.archive_animation_save",icon='FILE_BLEND', text="")
             row.operator("helldiver2.archive_animation_import", icon="IMPORT", text="").object_id = str(Entry.FileID)
+        elif Entry.TypeID == LuaID:
+            row.operator("helldiver2.lua_export", icon='EXPORT', text="").object_id = str(Entry.FileID)
+            row.operator("helldiver2.lua_import", icon='IMPORT', text="").object_id = str(Entry.FileID)
             
         if Global_TocManager.IsInPatch(Entry):
             props = row.operator("helldiver2.archive_removefrompatch", icon='FAKE_USER_ON', text="")
@@ -3840,7 +6264,7 @@ class HellDivers2ToolsPanel(Panel):
             props = row.operator("helldiver2.archive_undo_mod", icon='TRASH', text="")
             props.object_id     = str(Entry.FileID)
             props.object_typeid = str(Entry.TypeID)
-        if PatchOnly:
+        if Global_TocManager.IsInPatch(Entry) and Global_TocManager.ActiveArchive and not Global_TocManager.ActiveArchive.GetEntry(Entry.FileID, Entry.TypeID) :
             props = row.operator("helldiver2.archive_removefrompatch", icon='X', text="")
             props.object_id     = str(Entry.FileID)
             props.object_typeid = str(Entry.TypeID)
@@ -3867,6 +6291,7 @@ class HellDivers2ToolsPanel(Panel):
             row.prop(addon_prefs, "ShowArchivePatchPath",text="实时显示Archive和Patch路径")
             row.prop(addon_prefs,"Layout_search_New",text="显示搜索已知Archive为主的布局")
             row.prop(addon_prefs, "ShowQuickSwitch",text="显示快捷设置按钮")
+            row.prop(addon_prefs, "ShowQuickTestButton",text="显示测试Mod按钮")
             row.prop(addon_prefs,"ShowZipPatchButton",text="显示打包Patch为Zip功能")
             row.prop(addon_prefs,"DisplayRenameButton",text="显示重命名按钮")
             row = layout.row(); row.separator(); row.label(text="导入设置"); box = row.box(); row = box.grid_flow(columns=1)
@@ -3894,6 +6319,7 @@ class HellDivers2ToolsPanel(Panel):
             row.prop(scene.Hd2ToolPanelSettings, "GenerateRandomTextureIDs",text="生成随机纹理ID")
             row.prop(scene.Hd2ToolPanelSettings, "MergeArmatures",text="合并Armature")
             row.prop(addon_prefs, "CustomGamePath",text="自定义游戏文件目录")
+            row.prop(addon_prefs, "ShowLuaMenu",text="显示Lua相关功能")
             row.prop(addon_prefs, "advanced_mode",text="附加功能")
             
             row = layout.row()
@@ -3924,7 +6350,8 @@ class HellDivers2ToolsPanel(Panel):
                 row.prop(addon_prefs, "adv_full_package_list_export_path", text="")
                 row.label(text="Archive列表导出路径")
                 row.operator("helldiver2.export_archive_list",text="导出完整Archive列表",icon="EXPORT")
-                
+                row = layout.row(); row.separator(); row.label(text="调试用"); box = row.box(); row = box.grid_flow(columns=1)
+                row.prop(scene.Hd2ToolPanelSettings, "debug_parent_mat",text="debug_parent_mat")
         # Draw Archive Import/Export Buttons
         if addon_prefs.ShowQuickSwitch:
             row = layout.row(); row = layout.row()
@@ -3934,6 +6361,46 @@ class HellDivers2ToolsPanel(Panel):
             row.prop(scene.Hd2ToolPanelSettings, "ImportLods",text="导入Lods")
             row.prop(addon_prefs, "ImportStatic",text="导入静态网格（无权重）")
             row.prop(scene.Hd2ToolPanelSettings, "AutoLods",text="自动Lods")
+            box = layout.box()
+            row = box.row()
+            row.prop(
+                scene.Hd2ToolPanelSettings,
+                "IndependentPackagingMode",
+                text="独立封包模式",
+                icon='PACKAGE',
+            )
+            if scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+                row = box.row()
+                row.prop(scene.Hd2ToolPanelSettings, "IndependentProjectName", text="项目名称")
+                box.prop(scene.Hd2ToolPanelSettings, "IndependentAuthorName")
+                box.prop(scene.Hd2ToolPanelSettings, "IndependentAuthorHomepage")
+                runtime_group_ui.draw_runtime_group(box, scene.Hd2ToolPanelSettings)
+                row = box.row()
+                row.prop(
+                    scene.Hd2ToolPanelSettings,
+                    "IndependentIncludePhysics",
+                    text="自动整合物理与姿态驱动",
+                    icon='PHYSICS',
+                )
+                box.label(text=_independent_selection_summary(context), icon='RESTRICT_SELECT_OFF')
+                box.prop(addon_prefs, "AutoCleanArmor", text="保存时自动清理余下甲片")
+                row = box.row(align=True)
+                row.operator("helldiver2.independent_package_preflight", text="预检部位", icon='CHECKMARK')
+                row.operator("helldiver2.independent_package_save", text="保存部位/差分", icon='FILE_TICK')
+                row = box.row(align=True)
+                row.operator("helldiver2.independent_armor_cleanup", text="清理余下甲片", icon='MESH_DATA')
+                row.operator("helldiver2.independent_material_pack_save", text="独立保存材质包", icon='MATERIAL')
+                summary_prefix = '上次预检/保存：'
+                summary_lines = split_plan_summary_lines(
+                    scene.Hd2ToolPanelSettings.IndependentPlanSummary,
+                    first_line_prefix=summary_prefix,
+                )
+                column = box.column(align=True)
+                for index, summary_line in enumerate(summary_lines):
+                    column.label(
+                        text=(summary_prefix if index == 0 else '') + summary_line,
+                        icon='INFO' if index == 0 else 'BLANK1',
+                    )
             
         row = layout.row(); row = layout.row()
         row.operator("helldiver2.archive_import_default", icon= 'SOLO_ON', text="")
@@ -3952,21 +6419,21 @@ class HellDivers2ToolsPanel(Panel):
         else:
             row.operator("helldiver2.search_archives", icon= 'VIEWZOOM', text="")
             
-        if len(Global_TocManager.LoadedArchives) > 0:
-            Global_TocManager.SetActiveByName(scene.Hd2ToolPanelSettings.LoadedArchives)
-
         # Draw Patch Stuff
         row = layout.row(); row = layout.row()
         row.operator("helldiver2.archive_createpatch", icon= 'COLLECTION_NEW', text="新建Patch")
         row.operator("helldiver2.archive_export", icon= 'DISC', text="写入Patch")
+
+        if addon_prefs.ShowQuickTestButton:
+            row.operator("helldiver2.test_archive_export", icon= 'EXPORT', text="测试Mod")
         if addon_prefs.ShowZipPatchButton:
             row.operator("helldiver2.archive_zippatch_export",icon="EXPORT",text="导出为Zip")
         row.operator("helldiver2.patches_unloadall", icon= 'FILE_REFRESH', text="")
         
         row = layout.row()
         row.prop(scene.Hd2ToolPanelSettings, "Patches", text="Patches")
-        if len(Global_TocManager.Patches) > 0:
-            Global_TocManager.SetActivePatchByName(scene.Hd2ToolPanelSettings.Patches)
+        # if len(Global_TocManager.Patches) > 0:
+        #     Global_TocManager.SetActivePatchByName(scene.Hd2ToolPanelSettings.Patches)
         row.prop(scene.Hd2ToolPanelSettings,"IsRenamePatch",icon = "GREASEPENCIL",text="")
         row.prop(scene.Hd2ToolPanelSettings,"IsChangeOutPath",icon = "FOLDER_REDIRECT",text="")
         row.operator("helldiver2.archive_import", icon= 'IMPORT', text="").is_patch = True
@@ -3983,7 +6450,10 @@ class HellDivers2ToolsPanel(Panel):
         
         if scene.Hd2ToolPanelSettings.IsRenamePatch:
             row = layout.row()
-            row.label(text="重命名已经打开",icon="ERROR")
+            row.label(text="重命名已经打开",icon="INFO")
+            if scene.Hd2ToolPanelSettings.IndependentPackagingMode:
+                row = layout.row()
+                row.label(text="独立封包独立命名，不会遵循自定义命名",icon="ERROR")
             row = layout.row()
             row.operator("helldiver2.button_auto_rename_patch",text="自动重命名为基础资产的patch",icon="OUTLINER_DATA_GP_LAYER")
             row = layout.row()
@@ -3991,7 +6461,7 @@ class HellDivers2ToolsPanel(Panel):
         if scene.Hd2ToolPanelSettings.IsChangeOutPath:
             # PathSign = "\\" 
             row = layout.row()
-            row.label(text="修改Patch写入路径已经打开",icon="ERROR")
+            row.label(text="修改Patch写入路径已经打开",icon="INFO")
             row = layout.row()
             row.prop(scene.Hd2ToolPanelSettings, "NewPatchOutPath", text="修改路径 ")
             
@@ -4014,6 +6484,7 @@ class HellDivers2ToolsPanel(Panel):
                     row.label(text=f"写入路径预览: {os.path.join(os.path.dirname(DisplayTocPatchPath_add),scene.Hd2ToolPanelSettings.NewPatchName)}",icon="INFO")
                 else:
                     row.label(text=f"写入路径预览: {DisplayTocPatchPath_add}",icon="INFO")
+
             if os.path.exists(Global_PatchBasePath) and not scene.Hd2ToolPanelSettings.IsZipPatch:
                 box = layout.box()
                 box.operator("helldiver2.open_patch_out_directory",text="打开Patch保存文件夹")
@@ -4021,6 +6492,13 @@ class HellDivers2ToolsPanel(Panel):
             pass
             # row = layout.row()
             # row.label(text="无Patch载入，无法预览写入路径",icon="ERROR")
+        if addon_prefs.ShowLuaMenu:
+            box = layout.box()
+            row = box.row()
+            row.prop(scene.Hd2ToolPanelSettings,"LuaPanel",icon="DOWNARROW_HLT" if scene.Hd2ToolPanelSettings.LuaPanel else "RIGHTARROW",
+                icon_only=True, emboss=False, text="Lua Export / Import / Rebuild Boot Patch")
+            if scene.Hd2ToolPanelSettings.LuaPanel:
+                self.draw_lua_menu(box)
         #---------------------------        
         # Draw Archive Contents
         row = layout.row(); row = layout.row()
@@ -4069,7 +6547,7 @@ class HellDivers2ToolsPanel(Panel):
                 for EntryInfo in DisplayTocEntries:
                     Entry = EntryInfo[0]
                     if Entry.TypeID == Type.TypeID:
-                        if str(Entry.FileID).find(scene.Hd2ToolPanelSettings.SearchField) != -1:
+                        if str(Entry.FileID).find(scene.Hd2ToolPanelSettings.SearchField) != -1 or self.filter_entries_Animation(Entry.FileID).find(scene.Hd2ToolPanelSettings.SearchField) != -1:
                             bFound = True
                 if not bFound: continue
 
@@ -4137,7 +6615,7 @@ class HellDivers2ToolsPanel(Panel):
                     PatchOnly = EntryInfo[1]
                     # Exclude entries that should not be drawn
                     if Entry.TypeID != Type.TypeID: continue
-                    if str(Entry.FileID).find(scene.Hd2ToolPanelSettings.SearchField) == -1: continue
+                    if str(Entry.FileID).find(scene.Hd2ToolPanelSettings.SearchField) == -1 and self.filter_entries_Animation(Entry.FileID).find(scene.Hd2ToolPanelSettings.SearchField) == -1: continue
                     # Deal with friendly names
                     if len(Global_TocManager.SavedFriendlyNameIDs) > len(DrawChain) and Global_TocManager.SavedFriendlyNameIDs[len(DrawChain)] == Entry.FileID:
                         FriendlyName = Global_TocManager.SavedFriendlyNames[len(DrawChain)]
@@ -4167,7 +6645,63 @@ class HellDivers2ToolsPanel(Panel):
             Global_TocManager.DrawChain = DrawChain
         Global_TocManager.SavedFriendlyNames = NewFriendlyNames
         Global_TocManager.SavedFriendlyNameIDs = NewFriendlyIDs
-       
+
+
+    def filter_entries_Animation(self,fileID):
+        global Global_AnimationMapping
+        try:
+           StateMachineID = Global_AnimationMapping[fileID]
+           return str(next(iter(StateMachineID)))
+        except KeyError:
+            return ''
+
+
+    def draw_lua_menu(self, layout):
+        patch = Global_TocManager.ActivePatch
+
+        if patch is None:
+            layout.label(text="当前没有活动 Patch", icon='ERROR')
+        else:
+            layout.label(text=f"写入目标：{patch.Name}", icon='CHECKMARK')
+
+        row = layout.row(align=True)
+        row.operator(
+            "helldiver2.lua_create_boot_template",
+            text="创建扩展模板",
+            icon='FILE_NEW',
+        )
+        row.operator(
+            "helldiver2.lua_rebuild_boot",
+            text="重建 Boot Patch",
+            icon='FILE_REFRESH',
+        )
+
+        lua_entries = [
+            entry
+            for entry in Global_TocManager.SelectedEntries
+            if entry is not None and entry.TypeID == LuaID
+        ]
+        if lua_entries:
+            entry_ids = ",".join(str(entry.FileID) for entry in lua_entries)
+            row = layout.row(align=True)
+            row.operator(
+                "helldiver2.lua_export",
+                text=f"导出 Lua ({len(lua_entries)})",
+                icon='EXPORT',
+            ).object_id = entry_ids
+            row.operator(
+                "helldiver2.lua_import",
+                text=f"导入 Lua ({len(lua_entries)})",
+                icon='IMPORT',
+            ).object_id = entry_ids
+        else:
+            layout.label(text="选中 Lua 条目后可在这里导入/导出", icon='INFO')
+
+        info = layout.box()
+        info.label(text="明文 Lua：导入时自动加头，导出时自动去头")
+        info.label(text="LuaJIT：导出可编辑包装器、裸字节码和字符串报告")
+        info.label(text="包装器保留原行为，但不是反编译出来的原始源码", icon='INFO')
+
 
 class AQ_Modified_Credits(bpy.types.Panel):
     bl_order = 99
@@ -4204,6 +6738,7 @@ class WM_MT_button_context(Menu):
         AreAllTextures  = True
         AreAllMaterials = True
         AreAllParticles = True
+        AreAllXaml = True
         SingleEntry = True
         NumSelected = len(Global_TocManager.SelectedEntries)
         if len(Global_TocManager.SelectedEntries) > 1:
@@ -4213,23 +6748,40 @@ class WM_MT_button_context(Menu):
                 AreAllTextures = False
                 AreAllMaterials = False
                 AreAllParticles = False
+                AreAllXaml = False
             elif SelectedEntry.TypeID == TexID:
                 AreAllMeshes  = False
                 AreAllMaterials = False
                 AreAllParticles = False
+                AreAllXaml = False
             elif SelectedEntry.TypeID == MaterialID:
                 AreAllTextures = False
                 AreAllMeshes  = False
                 AreAllParticles = False
+                AreAllXaml = False
             elif SelectedEntry.TypeID == ParticleID:
                 AreAllTextures = False
                 AreAllMeshes  = False
                 AreAllMaterials = False
+                AreAllXaml = False
+            elif SelectedEntry.TypeID == XamlID:
+                AreAllTextures = False
+                AreAllMeshes  = False
+                AreAllMaterials = False
+                AreAllParticles = False
             else:
                 AreAllMeshes = False
                 AreAllTextures = False
                 AreAllMaterials = False
                 AreAllParticles = False
+                AreAllXaml = False
+        AreAllLua = (
+            len(Global_TocManager.SelectedEntries) > 0
+            and all(
+                selected_entry.TypeID == LuaID
+                for selected_entry in Global_TocManager.SelectedEntries
+            )
+        )
         
         RemoveFromPatchName = "Remove From Patch" if SingleEntry else f"Remove {NumSelected} From Patch"
         AddToPatchName = "Add To Patch" if SingleEntry else f"Add {NumSelected} To Patch"
@@ -4308,6 +6860,12 @@ class WM_MT_button_context(Menu):
                 row.operator("helldiver2.texture_savefromdds", icon='IMAGE_REFERENCE', text="Save Texture From DDS").object_id = str(Entry.FileID)
         elif AreAllMaterials:
             row.operator("helldiver2.material_save", icon='FILE_BLEND', text=SaveMaterialName).object_id = FileIDStr
+        elif AreAllXaml:
+            row.operator("helldiver2.xaml_import", icon='WORKSPACE', text="Import XAML").object_id = FileIDStr
+            row.operator("helldiver2.xaml_export", icon='WORKSPACE', text="Export XAML").object_id = FileIDStr
+        elif AreAllLua:
+            row.operator("helldiver2.lua_import", icon='IMPORT', text="导入 Lua").object_id = FileIDStr
+            row.operator("helldiver2.lua_export", icon='EXPORT', text="导出 Lua").object_id = FileIDStr
         # Draw copy ID buttons
         if SingleEntry:
             row.separator()
@@ -4338,12 +6896,19 @@ class WM_MT_button_context(Menu):
 #endregion
 
 classes = (
+    *runtime_group_ui.CLASSES,
     LoadArchiveOperator,
     PatchArchiveOperator,
     ImportStingrayMeshOperator,
     SaveStingrayMeshOperator,
     ImportStingrayAnimationOperator,
     SaveStingrayAnimationOperator,
+    ImportXAMLOperator,
+    ExportXAMLOperator,
+    ImportLuaOperator,
+    ExportLuaOperator,
+    RebuildBootLuaOperator,
+    CreateBootLuaTemplateOperator,
     ImportMaterialOperator,
     ImportTextureOperator,
     ExportTextureOperator,
@@ -4360,6 +6925,8 @@ classes = (
     SearchArchivesOperator,
     LoadArchivesOperator,
     ManuallyLoadArchivesOperator,
+    SetBoneAnimatedOperator,
+    AddHD2LightOperator,
     DecompressSlimPackage,
     ExportArchiveListOperator,
     CopyArchiveEntryOperator,
@@ -4376,6 +6943,10 @@ classes = (
     CopyTextOperator,
     BatchExportTextureOperator,
     BatchSaveStingrayMeshOperator,
+    IndependentPackagePreflightOperator,
+    IndependentPackageSaveOperator,
+    IndependentMaterialPackSaveOperator,
+    IndependentArmorCleanupOperator,
     SelectAllOfTypeOperator,
     RenamePatchEntryOperator,
     DuplicateEntryOperator,
@@ -4386,6 +6957,7 @@ classes = (
     ButtonOpenCacheDirectory,
     ButtonAutoRenamePatch,
     ButtonOpenPatchOutDirectory,
+    PatchArchiveTestOperator,
     ZipPatchArchiveOperator,
     DefaultLoadArchiveOperator,
     ChangeFilepathOperator,
@@ -4401,7 +6973,7 @@ classes = (
     AQ_Modified_Credits,
     ButtonAQSDKBilibili,
     ButtonAQSDKGitHub,
-    # SearchArmatureAnimationsOperator,
+    SearchArmatureAnimationsOperator,
 )
 
 Global_TocManager = TocManager()
@@ -4409,6 +6981,7 @@ Global_TocManager = TocManager()
 def register():
     LoadTypeHashes()
     LoadNameHashes()
+    LoadArchiveHashes()
     LoadShaderVariables(Global_variablespath)
     LoadShaderVariables_CN(Global_variablesCNpath)
     LoadUpdateArchiveList_CN()
@@ -4421,8 +6994,19 @@ def register():
     addonPreferences.register()
     addon_updater_ops.register(bl_info)
     bpy.types.VIEW3D_MT_object_context_menu.append(CustomPropertyContext)
+    bpy.types.VIEW3D_MT_armature_context_menu.append(CustomBoneContext)
+    if not bpy.app.timers.is_registered(_forget_material_output_bindings):
+        bpy.app.timers.register(_forget_material_output_bindings, first_interval=0.0)
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.save_pre):
+        if _forget_material_output_bindings not in handlers:
+            handlers.append(_forget_material_output_bindings)
 
 def unregister():
+    if bpy.app.timers.is_registered(_forget_material_output_bindings):
+        bpy.app.timers.unregister(_forget_material_output_bindings)
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.save_pre):
+        while _forget_material_output_bindings in handlers:
+            handlers.remove(_forget_material_output_bindings)
     bpy.utils.unregister_class(WM_MT_button_context)
     del Scene.Hd2ToolPanelSettings
     for cls in reversed(classes):
@@ -4430,6 +7014,7 @@ def unregister():
     addonPreferences.unregister()
     addon_updater_ops.unregister()
     bpy.types.VIEW3D_MT_object_context_menu.remove(CustomPropertyContext)
+    bpy.types.VIEW3D_MT_armature_context_menu.remove(CustomBoneContext)
 
 if __name__=="__main__":
     register()

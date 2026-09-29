@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime
-AddonPath = os.path.dirname(__file__)
+AddonPath = os.path.dirname(os.path.dirname(__file__))
 import subprocess
 
 Global_ArchiveIDS = []
@@ -28,7 +28,7 @@ def checkErrorLog():
 # end def
 
 def GetAndUpdateArchivelistCN():
-    subprocess.run([Global_UpdateEXE], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,cwd=os.path.dirname(Global_UpdateEXE))
+    subprocess.run([Global_UpdateEXE,AddonPath], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,cwd=os.path.dirname(Global_UpdateEXE))
     if checkErrorLog():
         with open(Global_kdoc_result_path , "r",encoding="utf-8") as f:
             data = json.load(f)

@@ -1,6 +1,6 @@
 import bpy
-from .AQ_Prefs_HD2 import AQ_PublicClass
-from . import addon_updater_ops
+from .access import AQ_PublicClass
+from ..updates import addon_updater_ops
 from bpy.props import BoolProperty, IntProperty
 
 
@@ -62,6 +62,7 @@ class HD2_AddonPreferences(bpy.types.AddonPreferences):
     png_Tex_Import_Switch : BoolProperty(name="PNG_Tex_Import_Switch",default = False,description = "开启PNG纹理导入开关，png会自动转换为dds,文件输出目录为软件缓存目录")
     ShowArchivePatchPath : BoolProperty(name="ShowArchivePatchPath",default = False,description = "实时显示活动Archive和Patch的路径")
     ShowQuickSwitch : BoolProperty(name="ShowQuickSwitch",default = True ,description = "显示快捷设置按钮，开启此项会将导入Lods、导入静态物体、自动Lods按钮直接显示在主面板")
+    ShowQuickTestButton : BoolProperty(name="ShowQuickTestButton", default=True, description="显示测试Mod按钮；检索游戏data目录最大Patch序号并递增写入，独立配套会先校验并安全部署")
     ShowZipPatchButton : BoolProperty(name="ShowZipPatchButton",default = False,description = "显示打包Patch为Zip功能")
     DisplayRenameButton : BoolProperty(name="DisplayRenameButton",default = True,description = "网格条目中显示重命名按钮")
     DisplayFriendlyName_Mesh_Skel : BoolProperty(name="DisplayFriendlyName",default = True,description = "在导入网格和骨架时赋予可读名称（如果有）")
@@ -72,6 +73,8 @@ class HD2_AddonPreferences(bpy.types.AddonPreferences):
     ShowshaderVariables_CN : BoolProperty(name="DisplayRenameButton",default = True,description = "显示着色器参数中文翻译")
     CustomGamePath : bpy.props.BoolProperty(name="CustomGamePath",default = False,description = "自定义游戏文件目录，如果你只是将游戏文件完整复制到其他位置，可以使用此选项来解除限制，不会强制检查steamapp目录")
     advanced_mode : BoolProperty(name="Advanced Mode", description = "显示高级选项", default = False)
+    ShowLuaMenu : BoolProperty(name="ShowLuaMenu", default=False, description="显示Lua与Boot Patch相关功能")
+    AutoCleanArmor : BoolProperty(name="AutoCleanArmor", default=True, description="独立身体保存时自动清理本次计划未覆盖的甲片；失败整次回滚，头盔与普通保存不受影响")
     def draw(self, context):
 
         # layout = self.layout
@@ -79,6 +82,7 @@ class HD2_AddonPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "tga_Tex_Import_Switch",text="TGA纹理导入开关")
         layout.prop(self, "png_Tex_Import_Switch",text="PNG纹理导入开关")
         layout.prop(self, "ShowArchivePatchPath",text="实时显示活动Archive和Patch的路径")
+        layout.prop(self, "ShowQuickTestButton",text="显示测试Mod按钮")
         layout.prop(self, "ShowZipPatchButton",text="显示打包Patch为Zip功能")
         layout.prop(self, "Layout_search_New",text="显示搜索已知Archive为主的布局")
         layout.prop(self, "ShowQuickSwitch",text="显示快捷设置按钮")

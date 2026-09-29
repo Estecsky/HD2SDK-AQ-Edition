@@ -25,6 +25,8 @@ import os
 import re
 import traceback
 
+ADDON_PACKAGE = __package__.rsplit('.', 1)[0]
+
 import bpy
 from bpy.app.handlers import persistent
 
@@ -115,9 +117,9 @@ def get_user_preferences(context=None):
         context = bpy.context
     prefs = None
     if hasattr(context, "user_preferences"):
-        prefs = context.user_preferences.addons.get(__package__, None)
+        prefs = context.user_preferences.addons.get(ADDON_PACKAGE, None)
     elif hasattr(context, "preferences"):
-        prefs = context.preferences.addons.get(__package__, None)
+        prefs = context.preferences.addons.get(ADDON_PACKAGE, None)
     if prefs:
         return prefs.preferences
     # To make the addon stable and non-exception prone, return None

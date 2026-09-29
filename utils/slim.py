@@ -3,10 +3,17 @@ import os
 import sys
 import bpy
 
-if bpy.app.version[0] == 4 and bpy.app.version[1] == 0:
+if sys.version_info[:2] == (3, 10):
     from .lz4_310 import block
-else:
+elif sys.version_info[:2] == (3, 11):
     from .lz4_311 import block
+elif sys.version_info[:2] == (3, 13):
+    from .lz4_313 import block
+else:
+    raise ImportError(
+        f"当前 Blender Python {sys.version_info.major}.{sys.version_info.minor} "
+        "没有随插件提供兼容的 LZ4 运行库"
+    )
 
 def read_int(file):
     return int.from_bytes(file.read(4), "little")
@@ -42,6 +49,7 @@ UNKNOWN = 0
 done_init = False
 package_contents = {}
 bundle_offsets = {}
+
 game_data_folder = ""
 
 def slim_init(file_path: str):
@@ -84,6 +92,7 @@ def decompress_dsar(file_path):
     bundle.close()
 
     return b"".join(data)
+
 def get_resource_from_bundle(bundle_path: str, resource_file_offset: int):
 
     # returns resource from bundle file; resource determined by file offset in uncompressed bundle
@@ -154,6 +163,10 @@ def init_bundle_mapping():
             bundle_name = os.path.basename(filename)
             bundle_offsets[bundle_name] = {}
             with open(os.path.join(game_data_folder, bundle_name), 'rb') as bundle:
+                magic = int.from_bytes(bundle.read(4), byteorder="little")
+                if magic != 0x52415344:
+                    del bundle_offsets[bundle_name]
+                    continue
                 bundle.seek(8)
                 num_chunks = read_int(bundle) # num data chunks
                 bundle.seek(0x20)
@@ -161,7 +174,7 @@ def init_bundle_mapping():
                 for j, offset in enumerate(uncompressed_offsets):
                     bundle_offsets[bundle_name][offset] = j
             
-            
+
     # check name of each package to find the right one
     for n in range(num_packages):
         bundle_location = 0x18 + n * 0x18
