@@ -3646,9 +3646,10 @@ def _load_independent_physbone_project(context, armature):
     if len(getattr(project, "chains", ())) == 0 and not len(getattr(project,"pose_drivers",())):
         return None
     try:
-        addon = importlib.import_module("HD2PhysBoneTool")
+        from .utils.addon_bridge import resolve_addon
+        addon = resolve_addon("PHYSBONE", context=context, error_type=PhysicsPackagingError)
         adapter = addon.physbone_blender.adapter_v1
-        physbone_core = importlib.import_module("HD2PhysBoneTool.physbone")
+        physbone_core = importlib.import_module(f"{addon.__name__}.physbone")
     except (ImportError, AttributeError) as error:
         raise PhysicsPackagingError(
             "检测到 PhysBone 项目，但 HD2PhysBoneTool 插件没有启用或版本过旧"
