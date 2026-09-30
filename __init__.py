@@ -2943,11 +2943,11 @@ def _report_independent_external_materials(operator, plan):
         ids = plan["external_material_ids"]
         summary = "、".join(ids[:4]) + ("…" if len(ids) > 4 else "")
         operator.report({'WARNING'},
-            f"模型已保存；{len(ids)} 个外部材质引用保留原 ID（{summary}），请配套原材质包；无需关联，本次未核验外部文件")
+            f"模型已保存；{len(ids)} 个外部材质引用保留原 ID（{summary}），请配套原材质包")
     elif plan and plan.get("unlinked_authoring_resources"):
-        operator.report({'WARNING'}, "模型已保存；本次不输出材质/贴图，原资源仍保留在制作 Patch，请另行配套材质包；无需关联")
+        operator.report({'WARNING'}, "模型已保存；原资源仍保留在制作 Patch，请另行配套材质包")
     elif plan and plan.get("authoring_material_resources"):
-        operator.report({'WARNING'}, "模型已保存；本次不写材质/贴图，制作 Patch 中的材质修改仍保留，请按需另行更新配套材质")
+        operator.report({'WARNING'}, "模型已保存；制作 Patch 中的材质修改仍保留，请按需另行更新配套材质")
 
 
 def _independent_unlinked_authoring_resources(context):
