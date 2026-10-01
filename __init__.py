@@ -4,7 +4,7 @@ bl_info = {
     "category": "Import-Export",
     "author": "kboykboy2, AQ_Echoo",
     "warning": "此为修改版",
-    "version": (2, 5, 2),
+    "version": (2, 5, 3),
     "doc_url": "https://github.com/Estecsky/HD2SDK-AQ-Edition"
 }
 
