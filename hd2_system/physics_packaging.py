@@ -144,33 +144,67 @@ def published_unit_rows(plan):
     )
 
 
-def required_custom_bones_by_unit(plan, weighted_bones_by_part, source_bone_names):
-    """把实际加权的独立辅助骨按 PartSlot 展开到最终 Unit。
+def unit_weight_sets(plan, weighted_bones_by_part, weighted_bones_by_unit=None):
+    """验证 Unit 权重摘要的完整性，并保留旧的按部位调用接口。
+
+    提供精确摘要时必须覆盖全部保存目标，且各 Unit 的并集必须与部位摘要一致；
+    绝不因缺项而退回槽位并集。部位摘要只用于保存域/链归属检查。
+    """
+    if not isinstance(weighted_bones_by_part, dict):
+        raise PhysicsPackagingError("部位权重摘要必须是对象")
+
+    def clean(names, label):
+        if not isinstance(names, (list, tuple, set, frozenset)):
+            raise PhysicsPackagingError(f"{label} 的权重摘要必须是名称集合")
+        return frozenset(str(name).strip() for name in names if str(name).strip())
+
+    by_part = {}
+    for slot, names in weighted_bones_by_part.items():
+        if slot not in PART_SLOTS:
+            raise PhysicsPackagingError(f"未知语义部位：{slot}")
+        by_part[slot] = clean(names, slot)
+    rows = published_unit_rows(plan)
+    if weighted_bones_by_unit is None:
+        return {row['unit_id']: by_part.get(row['part_slot'], frozenset()) for row in rows}
+    if not isinstance(weighted_bones_by_unit, dict):
+        raise PhysicsPackagingError("Unit 权重摘要必须是对象")
+    result = {}
+    for key, names in weighted_bones_by_unit.items():
+        if isinstance(key, bool) or not isinstance(key, (int, str)):
+            raise PhysicsPackagingError("Unit 权重摘要的 ID 无效")
+        try:
+            uid = int(key)
+        except ValueError as exc:
+            raise PhysicsPackagingError("Unit 权重摘要的 ID 无效") from exc
+        if not 0 < uid <= 0xFFFFFFFFFFFFFFFF or uid in result:
+            raise PhysicsPackagingError("Unit 权重摘要的 ID 无效或重复")
+        result[uid] = clean(names, f"Unit {uid:016x}")
+    if set(result) != {row['unit_id'] for row in rows}:
+        raise PhysicsPackagingError("Unit 权重摘要必须准确覆盖本次全部保存目标，不能缺失或包含未知 Unit")
+    combined = {}
+    for row in rows:
+        combined.setdefault(row['part_slot'], set()).update(result[row['unit_id']])
+    if any(set(by_part.get(slot, ())) != combined.get(slot, set())
+           for slot in set(by_part) | set(combined)):
+        raise PhysicsPackagingError("Unit 权重摘要与部位权重并集不一致")
+    return result
+
+
+def required_custom_bones_by_unit(plan, weighted_bones_by_part, source_bone_names,
+                                  *, weighted_bones_by_unit=None):
+    """返回每个保存 Unit 实际加权的独立辅助骨。
 
     这里不要求部位必须有辅助骨权重：独立封包中的普通公共骨也需要 Rig Profile，
     才能保留人物专属 Rest/比例。此函数只负责指出额外需要纳入的自定义骨；
     自定义骨的父链会在 ``build_rig_document`` 中从 Unit 场景图自动补齐。
     """
 
-    if not isinstance(weighted_bones_by_part, dict):
-        raise PhysicsPackagingError("部位权重摘要必须是对象")
     source_names = {
         str(name).strip() for name in source_bone_names if str(name).strip()
     }
-    custom_by_part = {}
-    for slot, names in weighted_bones_by_part.items():
-        if slot not in PART_SLOTS:
-            raise PhysicsPackagingError(f"未知语义部位：{slot}")
-        if not isinstance(names, (list, tuple, set, frozenset)):
-            raise PhysicsPackagingError(f"{slot} 的权重摘要必须是名称集合")
-        custom_by_part[slot] = frozenset(
-            str(name).strip()
-            for name in names
-            if str(name).strip() and str(name).strip() not in source_names
-        )
     return {
-        row["unit_id"]: custom_by_part.get(row["part_slot"], frozenset())
-        for row in published_unit_rows(plan)
+        uid: names - source_names
+        for uid, names in unit_weight_sets(plan, weighted_bones_by_part, weighted_bones_by_unit).items()
     }
 
 
@@ -357,22 +391,24 @@ def build_armor_physics_project(plan, authoring_project, weighted_bones_by_part)
 
 
 def required_profile_bones_by_unit(plan, authoring_project, weighted_bones_by_part,
-                                   *, solver_scope="single_unit"):
+                                   *, solver_scope="single_unit", weighted_bones_by_unit=None):
     """按最终 Unit 返回其 Rig Profile 必须包含的物理骨。
 
-    物理链仅要求出现在实际消费它的 PartSlot 中；否则胸部飘带会错误要求手臂、
-    腿和头盔 Unit 也包含同一组自定义骨。
+    共享身体按每个 Unit 的实际权重判定消费，仍保留所消费链的全部节点和依赖。
+    头盔单 Unit 求解器仍按部位保留完整物理/衣物依赖，与其现有编译分发一致。
     """
 
     if solver_scope not in {"single_unit", "shared_body_v2"}:
         raise PhysicsPackagingError("未知物理求解范围")
     shared = solver_scope == "shared_body_v2"
+    unit_weights = unit_weight_sets(plan, weighted_bones_by_part, weighted_bones_by_unit)
     if shared:
         # Validate the domain and full-chain closure even for direct callers.
         authoring_project = scope_physics_project(plan, authoring_project,
             weighted_bones_by_part, weighted_bones_by_part, solver_scope=solver_scope)
     project = build_armor_physics_project(plan, authoring_project, weighted_bones_by_part)
-    weights = consumer_bones_by_part(project, {
+    precise = shared and weighted_bones_by_unit is not None
+    weights = consumer_bones_by_part(project, unit_weights if precise else {
         binding["part_slot"]: set(binding["weighted_bones"])
         for binding in project["unit_bindings"]
     })
@@ -418,6 +454,8 @@ def required_profile_bones_by_unit(plan, authoring_project, weighted_bones_by_pa
             if not consumers:raise PhysicsPackagingError('衣物驱动没有实际消费部位')
             if not shared and len(consumers)!=1:raise PhysicsPackagingError('单Unit衣物驱动跨部位')
             for part in consumers:required_by_part[part].update(pose_dependencies(rule))
+    if precise:
+        return {uid: frozenset(required_by_part[uid]) for uid in unit_weights}
     result = {}
     for binding in project["unit_bindings"]:
         required = frozenset(required_by_part[binding["part_slot"]])
@@ -434,4 +472,5 @@ __all__ = (
     "required_custom_bones_by_unit",
     "required_profile_bones_by_unit",
     "scope_physics_project",
+    "unit_weight_sets",
 )

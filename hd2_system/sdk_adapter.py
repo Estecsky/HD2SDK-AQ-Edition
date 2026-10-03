@@ -138,6 +138,24 @@ def capture_target_properties(mapping):
     }
 
 
+def weighted_bones_by_save_job(plan, weighted_by_object):
+    """按真正的保存组合汇总骨骼，不把同槽的其他差分混入当前 Unit。"""
+    if not isinstance(weighted_by_object, dict):
+        raise SDKAdapterError("对象权重摘要必须是对象")
+    result = {}
+    for job in build_save_jobs(plan):
+        names = set()
+        for object_name in {job.object_name, job.base_object_name} - {""}:
+            if object_name not in weighted_by_object:
+                raise SDKAdapterError(f"保存计划缺少网格的权重摘要：{object_name}")
+            bones = weighted_by_object[object_name]
+            if not isinstance(bones, (list, tuple, set, frozenset)):
+                raise SDKAdapterError(f"{object_name} 的权重摘要必须是名称集合")
+            names.update(str(name).strip() for name in bones if str(name).strip())
+        result[int(job.published_unit_id or job.native_unit_id)] = frozenset(names)
+    return result
+
+
 def clear_target_properties(mapping):
     for key in tuple(mapping.keys()):
         if (

@@ -1,6 +1,6 @@
 """HD2SDK AQ Edition 的唯一版本源。"""
 
-VERSION = (2, 5, 3)
+VERSION = (2, 5, 4)
 PRERELEASE = ()
 PACKAGE_NAME = "HD2SDK-AQ-Edition"
 

@@ -13,6 +13,14 @@ ALIASES = {
 LABELS = {"PHYSBONE": "HD2 PhysBone Tool", "BATCH": "HD2 Batch Tool"}
 
 
+def _matches_package_name(name, role):
+    """Accept known install roots and GitHub's default-branch source ZIP roots."""
+    leaf = name.rsplit(".", 1)[-1]
+    if leaf.endswith("-main"):
+        leaf = leaf[:-5]
+    return leaf in ALIASES[role]
+
+
 def resolve_addon(role, *, context=None, error_type=RuntimeError):
     """Use enabled packages or explicitly registered source-package instances.
 
@@ -27,7 +35,7 @@ def resolve_addon(role, *, context=None, error_type=RuntimeError):
                getattr(getattr(context, "preferences", None), "addons", ())}
     candidates = {}
     for name, module in tuple(sys.modules.items()):
-        if module is None or name.rsplit(".", 1)[-1] not in ALIASES[role]:
+        if module is None or not _matches_package_name(name, role):
             continue
         # Ignore aliases pointing to another root: import children only through
         # the module's actual package so all collaborators share one RNA class.

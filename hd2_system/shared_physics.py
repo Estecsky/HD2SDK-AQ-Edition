@@ -11,7 +11,7 @@ import re
 import struct
 import zlib
 
-from .physics_packaging import scope_physics_project, published_unit_rows, consumer_bones_by_part
+from .physics_packaging import scope_physics_project, published_unit_rows, consumer_bones_by_part, unit_weight_sets
 from .physics_compiler import _physics_bones, _runtime_stem, _unit_number
 from .rig_format import build as build_rig, rest_globals
 from .unit_rig_profiles import _multiply, _inverse_rigid, build_rig_document
@@ -137,7 +137,8 @@ def _canonical_profile(plan, authoring, rig, canonical_id):
 
 
 def compile_shared_physics_pack(plan, authoring_project, weighted_by_part,
-        all_weighted_by_part, rig_document, physbone_build, *, runtime_capabilities=()):
+        all_weighted_by_part, rig_document, physbone_build, *, runtime_capabilities=(),
+        weighted_bones_by_unit=None):
     """Return pure byte payloads; caller stages them in an isolated directory.
 
     Explicit receiver capability is mandatory and is supplied by the independent
@@ -168,13 +169,14 @@ def compile_shared_physics_pack(plan, authoring_project, weighted_by_part,
         raise SharedPhysicsError('首轮共享协议仅支持一条完整链；多链/链间约束不能静默丢弃')
     build_rig(rig_document)  # existing index, finite matrix, count and flag gates
     rows = {r['unit_id']:r for r in published_unit_rows(plan)}
+    unit_weights = unit_weight_sets(plan, weighted_by_part, weighted_bones_by_unit)
     selections = _consumer_selections(plan, rows) if version >= 2 else {}
     profiles = {}
     for p in rig_document['profiles']:
         uid = _unit_number(p['unit_id'],'shared profile')
         if uid in profiles or uid not in rows:
             raise SharedPhysicsError('共享消费 Unit 重复或不属于本次保存计划')
-        missing = set(weighted_by_part.get(rows[uid]['part_slot'], ())) - {b['name'] for b in p['target_bones']}
+        missing = unit_weights[uid] - {b['name'] for b in p['target_bones']}
         if missing:
             raise SharedPhysicsError(f'Unit {uid:016x} 缺少实际加权骨：{sorted(missing)}')
         profiles[uid] = p

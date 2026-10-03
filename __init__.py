@@ -4,7 +4,7 @@ bl_info = {
     "category": "Import-Export",
     "author": "kboykboy2, AQ_Echoo",
     "warning": "此为修改版",
-    "version": (2, 5, 3),
+    "version": (2, 5, 4),
     "doc_url": "https://github.com/Estecsky/HD2SDK-AQ-Edition"
 }
 
@@ -70,6 +70,7 @@ from .hd2_system import saved_package_context as saved_contexts
 from .hd2_system import test_deployment, author_credit
 from .hd2_system import runtime_group_ui
 from .hd2_system.physics_packaging import scope_physics_project, published_unit_rows
+from .hd2_system.sdk_adapter import weighted_bones_by_save_job
 from .preferences.access import AQ_PublicClass, AQ_StaticMeshError
 from .hd2_system import (
     IndependentPackagingError,
@@ -3559,7 +3560,7 @@ def _saved_independent_plan_for_export(context):
     return saved
 
 
-def _independent_armature_and_weights(context, plan):
+def _independent_armature_and_weights(context, plan, *, include_unit_weights=False):
     semantic_objects = _independent_semantic_objects(
         context, plan.get("content_domain")
     )
@@ -3580,11 +3581,12 @@ def _independent_armature_and_weights(context, plan):
             armatures.add(owner)
             owner_by_object[obj.name] = owner
     if not armatures:
-        return None, {}
+        return (None, {}, {}) if include_unit_weights else (None, {})
     if len(armatures) != 1:
         raise PhysicsPackagingError("独立封包的全部语义部位必须共用一个工作骨架")
     armature = next(iter(armatures))
     weighted = {}
+    weighted_by_object = {}
     bone_names = set(armature.data.bones.keys())
     for obj in semantic_objects:
         if owner_by_object.get(obj.name) not in (None, armature):
@@ -3601,8 +3603,11 @@ def _independent_armature_and_weights(context, plan):
             if index < len(obj.vertex_groups)
             and obj.vertex_groups[index].name in bone_names
         }
+        weighted_by_object[obj.name] = names
         if names:
             weighted.setdefault(str(obj.get("HD2BT_PartSlot")), set()).update(names)
+    if include_unit_weights:
+        return armature, weighted, weighted_bones_by_save_job(plan, weighted_by_object)
     return armature, weighted
 
 
@@ -3792,7 +3797,8 @@ def _compile_independent_physics(context, plan):
     from .hd2_system.unit_rig_profiles import load_avatar_source
 
     plan['rig_gender'] = _require_publish_rig_gender(context)
-    armature, weighted = _independent_armature_and_weights(context, plan)
+    armature, weighted, unit_weights = _independent_armature_and_weights(
+        context, plan, include_unit_weights=True)
     if armature is None:
         return None
     bridge = _scoped_independent_physbone_project(context, plan, armature, weighted)
@@ -3805,7 +3811,7 @@ def _compile_independent_physics(context, plan):
         if bone["is_avatar_source"]
     }
     custom_by_unit = required_custom_bones_by_unit(
-        plan, weighted, source_names
+        plan, weighted, source_names, weighted_bones_by_unit=unit_weights
     )
     if bridge is None:
         authoring_project = skeleton_project
@@ -3817,7 +3823,8 @@ def _compile_independent_physics(context, plan):
     else:
         authoring_project, physbone_build = bridge
         required_by_unit = required_profile_bones_by_unit(
-            plan, authoring_project, weighted, solver_scope=_independent_solver_scope(plan)
+            plan, authoring_project, weighted, solver_scope=_independent_solver_scope(plan),
+            weighted_bones_by_unit=unit_weights
         )
         # Physics and clothing pose add required inputs/targets/colliders;
         # they do not replace ordinary
@@ -3884,8 +3891,7 @@ def _compile_independent_physics(context, plan):
         snapshots,
         required_bones_by_unit=required_by_unit,
         runtime_source_bones=load_avatar_source(),
-        weighted_bones_by_unit={row['unit_id']: weighted.get(row['part_slot'], ())
-                                for row in published_unit_rows(plan)},
+        weighted_bones_by_unit=unit_weights,
         rig_gender=plan['rig_gender'],
     )
     from .hd2_system.clothing_pose import enabled_rules, attach_single_unit_resources, CAPABILITY as POSE_CAPABILITY
@@ -3895,7 +3901,8 @@ def _compile_independent_physics(context, plan):
     elif plan.get('content_domain') == 'BODY':
         from .hd2_system.shared_physics import compile_shared_physics_pack, CAPABILITY_RUNTIME
         compiled = compile_shared_physics_pack(plan, authoring_project, weighted,
-            weighted, rig_document, physbone_build, runtime_capabilities=(CAPABILITY_RUNTIME,POSE_CAPABILITY))
+            weighted, rig_document, physbone_build, runtime_capabilities=(CAPABILITY_RUNTIME,POSE_CAPABILITY),
+            weighted_bones_by_unit=unit_weights)
     else:
         compiled = (compile_physics_pack(plan, authoring_project, weighted, rig_document, physbone_build)
                     if authoring_project.get('chains') else compile_rig_pack(plan,rig_document))
@@ -4096,11 +4103,12 @@ class IndependentPackageSaveOperator(Operator):
             jobs = build_save_jobs(plan)
             target_layouts = _independent_target_mesh_layouts(plan)
             required_physics_bones = {}
-            armature, weighted = _independent_armature_and_weights(context, plan)
+            armature, weighted, unit_weights = _independent_armature_and_weights(
+                context, plan, include_unit_weights=True)
             bridge = _scoped_independent_physbone_project(context, plan, armature, weighted) if armature else None
             if bridge is not None:
                 required_physics_bones = required_profile_bones_by_unit(plan, bridge[0], weighted,
-                    solver_scope=_independent_solver_scope(plan))
+                    solver_scope=_independent_solver_scope(plan), weighted_bones_by_unit=unit_weights)
         except (IndependentPackagingError, RuntimeManifestError,
                 SDKAdapterError, PhysicsPackagingError) as error:
             context.scene.Hd2ToolPanelSettings.IndependentPlanSummary = '保存预检失败：' + str(error)
