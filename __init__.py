@@ -5783,7 +5783,7 @@ class ArchiveSpreadsheetOperator(Operator):
     bl_description = "打开绝地潜兵2中文Archive 收集表"
 
     def execute(self, context):
-        url = "https://www.kdocs.cn/l/clp6j0afkUYN"
+        url = "https://www.kdocs.cn/l/csRnAs7QlZvQ"
         webbrowser.open(url, new=0, autoraise=True)
         return{'FINISHED'}
 
