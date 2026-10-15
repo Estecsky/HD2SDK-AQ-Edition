@@ -4,7 +4,7 @@ bl_info = {
     "category": "Import-Export",
     "author": "kboykboy2, AQ_Echoo",
     "warning": "此为修改版",
-    "version": (2, 5, 5),
+    "version": (2, 5, 6),
     "doc_url": "https://github.com/Estecsky/HD2SDK-AQ-Edition"
 }
 
@@ -3959,6 +3959,9 @@ def _write_independent_physics_archive(patch_path, compiled, runtime_manifest=No
                 archive.writestr(
                     info, companion["text"].encode("utf-8")
                 )
+        with zipfile.ZipFile(temporary) as archive:
+            if archive.testzip() is not None:
+                raise ValueError('配套 ZIP 回读校验失败')
         os.replace(temporary, target)
     except BaseException:
         try:
@@ -4190,7 +4193,7 @@ class IndependentPackageSaveOperator(Operator):
             compiled_physics = _compile_independent_physics(context, plan)
             _cache_saved_independent_plan(context, plan)
             # 先继承既有清理路由，再复用手动清理；失败由外层整次保存事务回滚。
-            if getattr(addon_prefs, 'AutoCleanArmor', False) and plan.get('content_domain') == 'BODY':
+            if getattr(addon_prefs, 'AutoCleanArmor', False) and plan.get('content_domain') in ('BODY', 'HELMET'):
                 cleaned, added = _apply_independent_armor_cleanup(context, plan)
                 context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
                     f"；自动清理 {cleaned} 个余下甲片（新增 {added}）"
@@ -4202,14 +4205,14 @@ class IndependentPackageSaveOperator(Operator):
                 )
                 scope = compiled_physics.get("export_scope", {})
                 isolated = set(scope.get("unconsumed_isolated_chains", ()))
-                excluded = set(scope.get("excluded_chains", ())) - isolated
-                if excluded:
-                    context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
-                        f"；另侧 {len(excluded)} 条物理链保留在工程，不参与本次保存"
-                    )
+                # excluded = set(scope.get("excluded_chains", ())) - isolated
+                # if excluded:
+                #     context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
+                #         f"；还有 {len(excluded)} 条物理链属于其他部位不参与本次保存"
+                #     )
                 if isolated:
                     context.scene.Hd2ToolPanelSettings.IndependentPlanSummary += (
-                        f"；{len(isolated)} 条无消费且无外部相互作用的末端链仅跳过导出，工程保留"
+                        f"；{len(isolated)} 条无消费且无外部相互作用的末端链跳过导出"
                     )
         except BaseException as error:
             if patch_index is not None:
@@ -4290,7 +4293,7 @@ def _apply_independent_armor_cleanup(context, plan):
 class IndependentArmorCleanupOperator(Operator):
     bl_label = "一键清理未存储甲片"
     bl_idname = "helldiver2.independent_armor_cleanup"
-    bl_description = "先保存部位/差分；清理当前护甲中未被本次保存计划覆盖的全部部位（含未用胸甲），不修改共享原资源"
+    bl_description = "先保存部位/差分；身体清理未保存甲片，头盔保留已保存主部件并清理同装备配件"
 
     def execute(self, context):
         if not context.scene.Hd2ToolPanelSettings.IndependentPackagingMode:
@@ -6148,7 +6151,7 @@ class Hd2ToolPanelSettings(PropertyGroup):
         default="独立护甲项目",
     )
     IndependentAuthorName : StringProperty(name="作者署名", default="", maxlen=80,
-        description="可选作者声明，随最终配套包保存")
+        description="可选，随最终配套包保存")
     IndependentAuthorHomepage : StringProperty(name="作者主页（可选）", default="", maxlen=512,
         description="HTTP/HTTPS 地址")
     IndependentPlanSummary : StringProperty(
@@ -6397,7 +6400,7 @@ class HellDivers2ToolsPanel(Panel):
                 row.operator("helldiver2.independent_package_preflight", text="预检部位", icon='CHECKMARK')
                 row.operator("helldiver2.independent_package_save", text="保存部位/差分", icon='FILE_TICK')
                 row = box.row(align=True)
-                row.operator("helldiver2.independent_armor_cleanup", text="清理余下甲片", icon='MESH_DATA')
+                row.operator("helldiver2.independent_armor_cleanup", text="清理余下甲片/配件", icon='MESH_DATA')
                 row.operator("helldiver2.independent_material_pack_save", text="独立保存材质包", icon='MATERIAL')
                 summary_prefix = '上次预检/保存：'
                 summary_lines = split_plan_summary_lines(

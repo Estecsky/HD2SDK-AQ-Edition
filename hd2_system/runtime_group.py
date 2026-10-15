@@ -1,12 +1,14 @@
 """One named ZIP of separately saved runtime members; never model/material data."""
 from datetime import datetime
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import tempfile
 import zipfile
+from . import mod_icon
 
 LIMIT = 256 * 1024 * 1024
 LEAF = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(rigbin|hd2phys|hd2shared|hd2pose|hd2preview|ini|hd2author)\Z')
@@ -22,20 +24,27 @@ def read_member(path):
     if not path.is_file() or path.stat().st_size > LIMIT:
         raise ValueError('配套 ZIP 缺失或超过 256 MiB')
     original = path.read_bytes()
-    files = {}
-    with zipfile.ZipFile(path) as archive:
+    files, seen, icon = {}, set(), None
+    with zipfile.ZipFile(io.BytesIO(original)) as archive:
         if not 1 <= len(archive.infolist()) <= 4096:
             raise ValueError('配套 ZIP 文件计数无效')
         total = 0
         for entry in archive.infolist():
             name = entry.filename
+            total += entry.file_size
+            if (total > LIMIT or entry.file_size > LIMIT or name.lower() in seen or
+                    (entry.external_attr >> 16) & 0xf000 == 0xa000 or entry.external_attr & 0x400):
+                raise ValueError('配套 ZIP 超限、含重复路径或符号链接')
+            seen.add(name.lower())
+            if name in mod_icon.MEMBER_NAMES:
+                if icon is not None:
+                    raise ValueError('配套中包含多个 Mod 图标')
+                icon = mod_icon.validate_member(name, archive.read(entry))
+                continue
             if (not name.startswith('HD2IndependentRig/') or
                     not LEAF.fullmatch(name[len('HD2IndependentRig/'):]) or
                     (entry.external_attr >> 16) & 0xf000 == 0xa000):
                 raise ValueError('仅允许独立骨/物理等运行时配套，不能混入模型、材质或嵌套组')
-            total += entry.file_size
-            if total > LIMIT or entry.file_size > LIMIT or name.lower() in {n.lower() for n in files}:
-                raise ValueError('配套 ZIP 超限或含重复路径')
             files[name] = archive.read(entry)
     identities = set()
     for name, data in files.items():
@@ -58,10 +67,10 @@ def read_member(path):
         raise ValueError('配套项目身份无效')
     if path.read_bytes() != original:
         raise ValueError('读取期间配套 ZIP 已改变')
-    return dict(project=project, archive=archive, files=files)
+    return dict(project=project, archive=archive, files=files, icon=icon)
 
 
-def write_group(inputs, target, *, identity, name, overwrite=False):
+def write_group(inputs, target, *, identity, name, overwrite=False, icon_path=None):
     name = name.strip()
     if (not re.fullmatch('[0-9a-f]{32}', identity) or not name or len(name) > 80 or
             any(ord(c) < 32 or ord(c) == 127 for c in name)):
@@ -72,9 +81,12 @@ def write_group(inputs, target, *, identity, name, overwrite=False):
         raise ValueError('输入配套数量无效、重复或输出覆盖输入')
     if target.exists() and not overwrite:
         raise ValueError('目标已存在；请明确允许覆盖或另选文件名')
-    files, members, identities = {}, [], set()
+    selected_icon = mod_icon.read(icon_path)
+    files, members, identities, icons = {}, [], set(), set()
     for path in paths:
         member = read_member(path)
+        if member['icon'] is not None:
+            icons.add(member['icon'])
         key = member['project'], member['archive']
         if key in identities or any(archive==key[1] for _,archive in identities):
             raise ValueError('同一 Archive 重复；请选择其最新配套包，不叠加不同项目')
@@ -86,6 +98,12 @@ def write_group(inputs, target, *, identity, name, overwrite=False):
             files[filename] = data
             rows.append(dict(path=filename, sha256=_hash(data)))
         members.append(dict(project=key[0], archive=key[1], files=rows))
+    if selected_icon is None:
+        if len(icons) > 1:
+            raise ValueError('输入配套图标不同，请选择一个 Mod 组图标后再合并')
+        selected_icon = next(iter(icons), None)
+    if selected_icon is not None:
+        files[mod_icon.member_name(selected_icon)] = selected_icon
     if len(files) > 4096 or sum(map(len,files.values())) > LIMIT:
         raise ValueError('合并配套超出总容量')
     now = datetime.now().astimezone()

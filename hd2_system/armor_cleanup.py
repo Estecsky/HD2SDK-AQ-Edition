@@ -2,7 +2,7 @@
 from copy import deepcopy
 import hashlib
 
-from .independent_packaging import IndependentPackagingError
+from .independent_packaging import IndependentPackagingError, load_part_catalog
 from .runtime_manifest import load_runtime_target_catalog
 from .sdk_adapter import build_save_jobs
 
@@ -16,36 +16,43 @@ def retained_cleanup_rows(plan, rows):
 def build_cleanup_plan(plan, active_unit_ids, saved_unit_ids, *, parts=None, targets=None):
     """Clear every unplanned native row inside this armour's verified boundary.
 
-    ``parts`` remains accepted for older callers, but a semantic slot is not
-    evidence that it was saved. Patch entries prove the current plan's outputs
-    exist and reserve IDs; unrelated/stale Patch entries do not protect slots.
+    Patch entries prove the current plan's outputs exist and reserve IDs;
+    unrelated/stale Patch entries do not protect slots. For helmets, ``parts``
+    also identifies main Head Units: every owned main head must be saved before
+    clearing accessories, never mistaken for an unused plate.
     """
-    if plan.get("content_domain") != "BODY" or not (plan.get("native_saves") or
+    domain = plan.get("content_domain")
+    if domain not in ("BODY", "HELMET") or not (plan.get("native_saves") or
             plan.get('difference_manifest', {}).get('free_parts')):
-        raise IndependentPackagingError("请先保存当前护甲的身体部位，再清理剩余甲片")
+        raise IndependentPackagingError("请先保存当前身体部位或头盔，再清理剩余甲片/配件")
     archive = str(plan["archive_name"]).lower()
     project = str(plan["project_id"])
     explicit_targets = targets is not None
-    targets = targets if explicit_targets else load_runtime_target_catalog()
-    target = targets["targets"].get(archive)
-    if not explicit_targets and plan.get('resource_target_policy') == 'PROJECT_ARCHIVE_ALIASES':
+    if (not explicit_targets or domain == 'HELMET') and plan.get('resource_target_policy') == 'PROJECT_ARCHIVE_ALIASES':
         # NPC/display archives may not be selectable player appearances. Their
         # independently verified descriptor boundary is still authoritative;
         # only Units owned by EVERY matching descriptor can be cleaned.
+        # Helmet accessories must use this complete closure, never the older
+        # appearance/semantic table which may list only the main Head Unit.
         from .resource_isolation import load_binding_catalog
         binding = load_binding_catalog()['targets'].get(archive)
-        if binding and binding['domain'] == 'BODY' and binding['equipment']:
+        if binding and binding['domain'] == domain and binding['equipment']:
             owned = set.intersection(*(set(row['unit_ids']) for row in binding['equipment']))
             target = {'unit_ids': sorted(owned)}
         else:
-            raise IndependentPackagingError('当前 Archive 未收录身体装备独立引用边界，不能自动清理')
+            raise IndependentPackagingError('当前 Archive 未收录对应身体/头盔装备独立引用边界，不能清理')
+    elif domain == 'HELMET':
+        raise IndependentPackagingError('头盔配件清理要求独立资源计划，请重新保存头盔')
+    else:
+        targets = targets if explicit_targets else load_runtime_target_catalog()
+        target = targets['targets'].get(archive)
     if target is None:
         raise IndependentPackagingError("当前 Archive 未收录护甲资源边界，不能自动清理")
     active = {int(value) for value in active_unit_ids}
     saved = {int(value) for value in saved_unit_ids}
     jobs = build_save_jobs(plan)
-    if not jobs or any(job.part_slot == 'Head' for job in jobs):
-        raise IndependentPackagingError('甲片清理只接受已保存的身体部位计划')
+    if not jobs or any((job.part_slot == 'Head') != (domain == 'HELMET') for job in jobs):
+        raise IndependentPackagingError('清理计划的已保存部位与身体/头盔范围不一致')
     protected = {int(job.native_unit_id) for job in jobs}
     published = {int(job.published_unit_id or job.native_unit_id) for job in jobs}
     if not published <= saved:
@@ -53,9 +60,16 @@ def build_cleanup_plan(plan, active_unit_ids, saved_unit_ids, *, parts=None, tar
     owned_active = {int(value, 16) for value in target['unit_ids']} & active
     if not protected <= owned_active:
         raise IndependentPackagingError('已保存计划的部位超出当前护甲资源边界')
+    if domain == 'HELMET':
+        part_catalog = parts if parts is not None else load_part_catalog()
+        main_heads = {int(value) for value in part_catalog['part_slots']['Head']}
+        if not protected <= main_heads or (owned_active & main_heads) - protected:
+            raise IndependentPackagingError('头盔主部件未完整保存或目标无效，不能清理配件')
     # Protect only native routes actually represented by the saved plan, across
     # every base/group/free choice and body type. Unused Torso_Armor (or any
-    # other semantic slot) is intentionally eligible for point-mesh cleanup.
+    # other body slot) is intentionally eligible for point-mesh cleanup.
+    # In HELMET, validated main heads are protected and only accessory rows
+    # inside the same equipment closure can remain as candidates.
     candidates = owned_active - protected
     rows = []
     occupied = active | saved

@@ -1,4 +1,4 @@
-"""Compile AQSDK's semantic body groups into runtime difference Manifest v4.
+"""Compile AQSDK's semantic groups and free parts into runtime manifests.
 
 Authors name a base group and sparse body groups. Runtime identities stay an
 implementation detail: one semantic PartSlot is expanded to every matching
@@ -22,7 +22,7 @@ _ARCHIVE_ID = re.compile(r"(?i)(?<![0-9a-f])([0-9a-f]{16})(?![0-9a-f])")
 
 
 class RuntimeManifestError(ValueError):
-    """The authored plan cannot produce one safe runtime Manifest v4."""
+    """The authored plan cannot produce one safe runtime manifest."""
 
 
 def load_runtime_target_catalog(path=None):
@@ -74,7 +74,7 @@ def _hex64(value):
 
 
 def build_runtime_difference_manifest(plan, rig_profile_unit_ids=(), catalog=None):
-    """Return a deterministic Manifest v4 document, or ``None`` without body groups."""
+    """Return a deterministic runtime manifest, or ``None`` without differences."""
 
     if plan.get("schema") != PLAN_SCHEMA:
         raise RuntimeManifestError("不支持的独立封包计划")
@@ -82,9 +82,18 @@ def build_runtime_difference_manifest(plan, rig_profile_unit_ids=(), catalog=Non
     if not isinstance(authored, dict):
         raise RuntimeManifestError("独立封包计划缺少差分清单")
     if authored.get('difference_logic') == 'FREE':
+        if authored.get('body_groups') or authored.get('helmet_differences'):
+            raise RuntimeManifestError('同一运行时清单不能混合组差分与自由差分')
         from .free_runtime_manifest import build_free_runtime_manifest
         # v6 uses the verified resource binding catalog, not the v4 appearance catalog.
         return build_free_runtime_manifest(plan, rig_profile_unit_ids)
+    if authored.get('free_parts'):
+        raise RuntimeManifestError('组差分计划不能包含自由差分部位')
+    if authored.get('helmet_differences'):
+        from .helmet_runtime_manifest import build_helmet_runtime_manifest
+        # Helmet groups use the existing exclusive v6 selector, including an
+        # explicit base option. Their saved models remain GROUP replacements.
+        return build_helmet_runtime_manifest(plan, rig_profile_unit_ids)
     authored_groups = tuple(authored.get("body_groups", ()))
     cleanup = () if plan.get("resource_target_policy") == "PROJECT_ARCHIVE_ALIASES" else tuple(plan.get("armor_cleanup", ()))
     if not authored_groups and not cleanup:

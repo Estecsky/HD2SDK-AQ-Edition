@@ -74,7 +74,7 @@ class HD2_AddonPreferences(bpy.types.AddonPreferences):
     CustomGamePath : bpy.props.BoolProperty(name="CustomGamePath",default = False,description = "自定义游戏文件目录，如果你只是将游戏文件完整复制到其他位置，可以使用此选项来解除限制，不会强制检查steamapp目录")
     advanced_mode : BoolProperty(name="Advanced Mode", description = "显示高级选项", default = False)
     ShowLuaMenu : BoolProperty(name="ShowLuaMenu", default=False, description="显示Lua与Boot Patch相关功能")
-    AutoCleanArmor : BoolProperty(name="AutoCleanArmor", default=True, description="独立身体保存时自动清理本次计划未覆盖的甲片；失败整次回滚，头盔与普通保存不受影响")
+    AutoCleanArmor : BoolProperty(name="AutoCleanArmor", default=True, description="独立保存时自动清理未使用的身体甲片或同装备头盔配件，保留已保存主头盔；失败整次回滚，普通保存不受影响")
     def draw(self, context):
 
         # layout = self.layout

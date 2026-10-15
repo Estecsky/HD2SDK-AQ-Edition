@@ -379,6 +379,7 @@ def build_rig_document(authoring_project, unit_snapshots, required_bones_by_unit
 
     profiles = []
     seen_units = set()
+    missing_parent_units = {}
     for snapshot_index, snapshot in enumerate(unit_snapshots):
         if not isinstance(snapshot, dict):
             raise UnitRigProfileError(f"unit_snapshots[{snapshot_index}]不是对象")
@@ -484,9 +485,9 @@ def build_rig_document(authoring_project, unit_snapshots, required_bones_by_unit
                 if runtime_source_bones is not None:
                     source_index = target_bones[parent_new]["source_index"]
             elif name in unit_required:
-                raise UnitRigProfileError(
-                    f"Unit {unit_id:016x} 的自定义物理根骨 {name} 没有可继承的父节点"
-                )
+                # Collect across all saved Units so one validation pass exposes
+                # every disconnected custom root, including shared variants.
+                missing_parent_units.setdefault(name, []).append(unit_id)
             target_bones.append({
                 "name": name,
                 "parent": parent_new,
@@ -516,6 +517,15 @@ def build_rig_document(authoring_project, unit_snapshots, required_bones_by_unit
             "hand_grips": authored_hand_grips(author_bones, target_bones, source_bones)
                           if runtime_source_bones is not None else [],
         })
+    if missing_parent_units:
+        details = "\n".join(
+            f"- {name}（Unit " + "、".join(f"{unit_id:016x}" for unit_id in unit_ids) + "）"
+            for name, unit_ids in missing_parent_units.items()
+        )
+        raise UnitRigProfileError(
+            f"自定义物理根骨没有可继承的父节点（共 {len(missing_parent_units)} 根）：\n"
+            + details
+        )
     if not profiles:
         raise UnitRigProfileError("没有可生成的 Unit Rig Profile")
     return {

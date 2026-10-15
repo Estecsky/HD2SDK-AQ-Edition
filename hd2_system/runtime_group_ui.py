@@ -34,6 +34,8 @@ SETTINGS_PROPERTIES = {
     'IndependentRuntimeGroupPathB': StringProperty(
         name='配套文件 2', update=_normalize_setting('IndependentRuntimeGroupPathB')),
     'IndependentRuntimeGroupName': StringProperty(name='Mod 组名称', maxlen=80),
+    'IndependentRuntimeGroupIcon': StringProperty(name='Mod 组图标（可选）', subtype='FILE_PATH',
+        description='静态 PNG 或 JPG/JPEG；留空沿用输入中唯一图标，图标不同时需指定'),
 }
 
 
@@ -50,6 +52,7 @@ def draw_runtime_group(layout, settings):
         row.prop(settings, name)
         row.operator('helldiver2.independent_runtime_group_pick', text='', icon='FILE_FOLDER').slot = index
     box.prop(settings, 'IndependentRuntimeGroupName')
+    box.prop(settings, 'IndependentRuntimeGroupIcon')
     box.operator('helldiver2.independent_runtime_group', text='合并 Mod 配套组', icon='PACKAGE')
 
 
@@ -139,7 +142,8 @@ class IndependentRuntimeGroupOperator(Operator, ExportHelper):
             overwrite = self.browser_invoked and self.check_existing and target == self.filepath
             identity = context.scene.get('HD2IR_RuntimeGroupId') or uuid.uuid4().hex
             name = self.group_name.strip() or settings.IndependentRuntimeGroupName.strip() or settings.IndependentProjectName.strip() or 'Mod 配套组'
-            manifest = write_group(paths, target, identity=identity, name=name, overwrite=overwrite)
+            manifest = write_group(paths, target, identity=identity, name=name, overwrite=overwrite,
+                                   icon_path=_absolute(settings.IndependentRuntimeGroupIcon))
             context.scene['HD2IR_RuntimeGroupId'] = identity
             self.report({'INFO'}, f"已合并 {len(manifest['members'])} 套配套；头身保存域及作者声明保持独立")
             return {'FINISHED'}
