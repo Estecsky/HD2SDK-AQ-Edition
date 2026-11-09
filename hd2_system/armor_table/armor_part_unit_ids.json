@@ -50,6 +50,26 @@
         "BFM-220"
       ],
       "verification": "Exact decimal semantic IDs matched retained equipment registry Unit identities; body and helmet keys joined by Archive. Save/export/visual acceptance remains pending."
+    },
+    "workbook_20261024_update": {
+      "updated_local": "2026-10-24T18:54:45.119397+08:00",
+      "workbook": "地狱老司机2 Archive ID中文收集表 (3).xlsx",
+      "sha256": "7cef4d951102fb30e4b4b587285257bbabc595db9a7c545dbb83d1fe00997d7f",
+      "sheet": "盔甲部位ID表",
+      "ranges": [
+        "A563:E579",
+        "A581:E597",
+        "A599:E615",
+        "F923:J939"
+      ],
+      "armor_codes": [
+        "IX-Voidwalker",
+        "SS-15",
+        "SS-33",
+        "SS-500"
+      ],
+      "semantic_id_count": 40,
+      "verification": "Exact uint64 decimal strings verified in current stock Archive TOCs; retained IX-Voidwalker equipment binding reused; SS equipment keys await verification."
     }
   },
   "authoring_contract": {
@@ -189,7 +209,13 @@
       "7020059899917908820",
       "12324442928154689978",
       "7664169494082307623",
-      "12954458403102269257"
+      "12954458403102269257",
+      "13049551592463015237",
+      "16404931477268912062",
+      "3451112193230879608",
+      "5853584479349255688",
+      "6481009598502250464",
+      "9979349219080594249"
     ],
     "LeftArm": [
       "10017070859812192016",
@@ -323,7 +349,13 @@
       "3786904610753079204",
       "17050650742259690578",
       "16525781501907239653",
-      "10315729815759886077"
+      "10315729815759886077",
+      "12943671928942265756",
+      "15427977638156342473",
+      "16563763059785642494",
+      "474403219390919347",
+      "6905506478333719576",
+      "9605430878645630559"
     ],
     "RightArm": [
       "10009120076700577125",
@@ -459,7 +491,13 @@
       "14344917972233868704",
       "8173833923065563886",
       "17313575811376189197",
-      "18302902297330406780"
+      "18302902297330406780",
+      "15422789811163949938",
+      "18098157016613421809",
+      "5142426296733148654",
+      "5226242981235079896",
+      "5915358396780756897",
+      "6757999834264400599"
     ],
     "Torso": [
       "10205078411867208167",
@@ -607,7 +645,13 @@
       "8378975608170071791",
       "7982102624158097172",
       "10708046350905731873",
-      "11777884449252189211"
+      "11777884449252189211",
+      "10517317107474837008",
+      "13380866754059115387",
+      "13613638432758340987",
+      "14872236372751218744",
+      "14933765329123281033",
+      "5468515490159350907"
     ],
     "Torso_Armor": [
       "10103673206034981580",
@@ -799,7 +843,13 @@
       "3477654628113766466",
       "1028902737080060998",
       "16817835613676333134",
-      "7217426848195529434"
+      "7217426848195529434",
+      "11872280150707934226",
+      "1220518000076734378",
+      "17003065395942404181",
+      "2205499001390125355",
+      "6967536759330675368",
+      "8922066715460442499"
     ],
     "LeftLeg": [
       "10032184426687960537",
@@ -867,7 +917,10 @@
       "9825624991436372247",
       "5499417346089308713",
       "9038387536216756164",
-      "6442600054129985692"
+      "6442600054129985692",
+      "3983045282827377951",
+      "777789709746436021",
+      "817750421148013715"
     ],
     "RightLeg": [
       "1017096292335101300",
@@ -936,7 +989,10 @@
       "9705927373705771496",
       "484080661884422852",
       "16560523663813285012",
-      "12776164901931005166"
+      "12776164901931005166",
+      "142890470394148710",
+      "18030138082572282986",
+      "9962807217392754998"
     ],
     "Head": [
       "10209554656734551868",
@@ -1046,7 +1102,11 @@
       "9975523152882285545",
       "8231563669120423652",
       "11399809443524213956",
-      "4281047719218373011"
+      "4281047719218373011",
+      "13108926888288924404",
+      "2141162471558298731",
+      "2591364940132281915",
+      "9998892470629052103"
     ]
   },
   "unit_index": {
@@ -2181,6 +2241,54 @@
       "12954458403102269257": {
         "armor_codes": [
           "BFM-220"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "6481009598502250464": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "3451112193230879608": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "13049551592463015237": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "5853584479349255688": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "9979349219080594249": {
+        "armor_codes": [
+          "SS-15"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "16404931477268912062": {
+        "armor_codes": [
+          "SS-15"
         ],
         "resource_profiles": [
           "Stocky"
@@ -3323,6 +3431,54 @@
       "10315729815759886077": {
         "armor_codes": [
           "BFM-220"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "6905506478333719576": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "16563763059785642494": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "474403219390919347": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "9605430878645630559": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "12943671928942265756": {
+        "armor_codes": [
+          "SS-15"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "15427977638156342473": {
+        "armor_codes": [
+          "SS-15"
         ],
         "resource_profiles": [
           "Stocky"
@@ -4479,6 +4635,54 @@
       "18302902297330406780": {
         "armor_codes": [
           "BFM-220"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "18098157016613421809": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "6757999834264400599": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "5226242981235079896": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "15422789811163949938": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "5915358396780756897": {
+        "armor_codes": [
+          "SS-15"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "5142426296733148654": {
+        "armor_codes": [
+          "SS-15"
         ],
         "resource_profiles": [
           "Stocky"
@@ -5722,6 +5926,54 @@
       "11777884449252189211": {
         "armor_codes": [
           "BFM-220"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "5468515490159350907": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "14933765329123281033": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "10517317107474837008": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "13613638432758340987": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "13380866754059115387": {
+        "armor_codes": [
+          "SS-15"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "14872236372751218744": {
+        "armor_codes": [
+          "SS-15"
         ],
         "resource_profiles": [
           "Stocky"
@@ -7276,6 +7528,54 @@
         "resource_profiles": [
           "Stocky"
         ]
+      },
+      "1220518000076734378": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "6967536759330675368": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "2205499001390125355": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "17003065395942404181": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
+      },
+      "8922066715460442499": {
+        "armor_codes": [
+          "SS-15"
+        ],
+        "resource_profiles": [
+          "Slim"
+        ]
+      },
+      "11872280150707934226": {
+        "armor_codes": [
+          "SS-15"
+        ],
+        "resource_profiles": [
+          "Stocky"
+        ]
       }
     },
     "LeftLeg": {
@@ -7844,6 +8144,30 @@
       "6442600054129985692": {
         "armor_codes": [
           "BFM-220"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "817750421148013715": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "3983045282827377951": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "777789709746436021": {
+        "armor_codes": [
+          "SS-15"
         ],
         "resource_profiles": [
           "Shared"
@@ -8423,6 +8747,30 @@
       "12776164901931005166": {
         "armor_codes": [
           "BFM-220"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "142890470394148710": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "18030138082572282986": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "9962807217392754998": {
+        "armor_codes": [
+          "SS-15"
         ],
         "resource_profiles": [
           "Shared"
@@ -9295,6 +9643,38 @@
       "4281047719218373011": {
         "armor_codes": [
           "BFM-220"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "2141162471558298731": {
+        "armor_codes": [
+          "SS-33"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "9998892470629052103": {
+        "armor_codes": [
+          "SS-500"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "13108926888288924404": {
+        "armor_codes": [
+          "IX-Voidwalker"
+        ],
+        "resource_profiles": [
+          "Shared"
+        ]
+      },
+      "2591364940132281915": {
+        "armor_codes": [
+          "SS-15"
         ],
         "resource_profiles": [
           "Shared"
@@ -17558,6 +17938,248 @@
         "Head": [
           {
             "unit_id": "4281047719218373011",
+            "resource_profile": "Shared"
+          }
+        ]
+      }
+    },
+    "SS-33": {
+      "source_names": [
+        "SS-33"
+      ],
+      "category": "轻甲",
+      "slots": {
+        "Head": [
+          {
+            "unit_id": "2141162471558298731",
+            "resource_profile": "Shared"
+          }
+        ],
+        "Torso_Armor": [
+          {
+            "unit_id": "1220518000076734378",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "6967536759330675368",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "LeftArm": [
+          {
+            "unit_id": "6905506478333719576",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "16563763059785642494",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "RightArm": [
+          {
+            "unit_id": "18098157016613421809",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "6757999834264400599",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "Hips": [
+          {
+            "unit_id": "6481009598502250464",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "3451112193230879608",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "Torso": [
+          {
+            "unit_id": "5468515490159350907",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "14933765329123281033",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "LeftLeg": [
+          {
+            "unit_id": "817750421148013715",
+            "resource_profile": "Shared"
+          }
+        ],
+        "RightLeg": [
+          {
+            "unit_id": "142890470394148710",
+            "resource_profile": "Shared"
+          }
+        ]
+      }
+    },
+    "SS-500": {
+      "source_names": [
+        "SS-500"
+      ],
+      "category": "轻甲",
+      "slots": {
+        "Head": [
+          {
+            "unit_id": "9998892470629052103",
+            "resource_profile": "Shared"
+          }
+        ],
+        "Torso_Armor": [
+          {
+            "unit_id": "2205499001390125355",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "17003065395942404181",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "LeftArm": [
+          {
+            "unit_id": "474403219390919347",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "9605430878645630559",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "RightArm": [
+          {
+            "unit_id": "5226242981235079896",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "15422789811163949938",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "Hips": [
+          {
+            "unit_id": "13049551592463015237",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "5853584479349255688",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "Torso": [
+          {
+            "unit_id": "10517317107474837008",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "13613638432758340987",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "LeftLeg": [
+          {
+            "unit_id": "3983045282827377951",
+            "resource_profile": "Shared"
+          }
+        ],
+        "RightLeg": [
+          {
+            "unit_id": "18030138082572282986",
+            "resource_profile": "Shared"
+          }
+        ]
+      }
+    },
+    "IX-Voidwalker": {
+      "source_names": [
+        "IX-“寂域行者”"
+      ],
+      "category": "轻甲",
+      "slots": {
+        "Head": [
+          {
+            "unit_id": "13108926888288924404",
+            "resource_profile": "Shared"
+          }
+        ]
+      }
+    },
+    "SS-15": {
+      "source_names": [
+        "SS-15"
+      ],
+      "category": "中甲",
+      "slots": {
+        "Head": [
+          {
+            "unit_id": "2591364940132281915",
+            "resource_profile": "Shared"
+          }
+        ],
+        "Torso_Armor": [
+          {
+            "unit_id": "8922066715460442499",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "11872280150707934226",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "LeftArm": [
+          {
+            "unit_id": "12943671928942265756",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "15427977638156342473",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "RightArm": [
+          {
+            "unit_id": "5915358396780756897",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "5142426296733148654",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "Hips": [
+          {
+            "unit_id": "9979349219080594249",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "16404931477268912062",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "Torso": [
+          {
+            "unit_id": "13380866754059115387",
+            "resource_profile": "Slim"
+          },
+          {
+            "unit_id": "14872236372751218744",
+            "resource_profile": "Stocky"
+          }
+        ],
+        "LeftLeg": [
+          {
+            "unit_id": "777789709746436021",
+            "resource_profile": "Shared"
+          }
+        ],
+        "RightLeg": [
+          {
+            "unit_id": "9962807217392754998",
             "resource_profile": "Shared"
           }
         ]

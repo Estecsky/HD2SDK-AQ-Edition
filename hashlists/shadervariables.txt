@@ -1030,6 +1030,7 @@ SubsurfaceOcclusionMaskcurve 0x64ca4a51
 SubsurfaceThickness 0x15e00526
 SubsurfaceTint 0x304b6073
 SubsurfaceWrap 0x2c9d0736
+SubsurfaceOverrideEnabled 0x3c503b51
 SunCol 0x0a926caa
 SunColorOverride 0x51c4d38c
 SunDir 0xdf33e43d
@@ -28285,3 +28286,10 @@ CMovement2 0xfffcefc5
 LTurretBarrel 0xfffdd90a
 UpperButtEntrails11 0xffff729a
 GRubble01 0xffffdefc
+MetallicScale 0xab4096ab
+RoughnessScale 0x20d102d1
+RoughnessBias 0x758d22ba
+MulticolorEmissionEnabled 0xf514b014
+OpacityThrehold 0x7f667c01
+BrightnessIncrease 0x762f256c
+BrightnessDecrease 0x08eff3b3

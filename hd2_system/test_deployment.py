@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 
 PATCH_SUFFIXES = ("", ".gpu_resources", ".stream")
-RUNTIME_SUFFIXES = (".rigbin", ".hd2phys", ".hd2shared", ".hd2pose", ".hd2preview", ".ini", ".hd2author")
+RUNTIME_SUFFIXES = (".rigbin", ".hd2phys", ".hd2shared", ".hd2pose", ".hd2preview", ".hd2morph", ".ini", ".hd2author")
 
 
 class TestDeploymentError(ValueError):
@@ -51,6 +51,16 @@ def runtime_payloads(compiled, *companions):
                 or name in {".", ".."} or not name.endswith(RUNTIME_SUFFIXES)
                 or not isinstance(data, bytes)):
             raise TestDeploymentError("运行时配套文件名或数据类型无效")
+        if name.endswith('.hd2morph'):
+            from . import morph_format
+            if not morph_format.EXPORT_AVAILABLE:
+                raise TestDeploymentError(morph_format.EXPORT_UNAVAILABLE)
+            try:
+                document = morph_format.decode(data)
+            except morph_format.MorphFormatError as error:
+                raise TestDeploymentError('形态键配套数据无效：' + str(error)) from error
+            if name != document['project_id'] + '.' + document['archive_id'] + morph_format.SUFFIX:
+                raise TestDeploymentError('形态键配套文件名与内部项目/Archive 身份不一致')
     return files
 
 

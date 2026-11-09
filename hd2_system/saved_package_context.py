@@ -1,10 +1,11 @@
 """Persistent save records scoped to a project, Archive, Patch and content domain.
 
-This stores metadata only. Export must still validate the active Archive/Patch,
+This stores metadata only. Export must still validate the selected Archive/Patch,
 the current semantic plan and the actual Unit payloads in the receiving layer.
 """
 from copy import deepcopy
 import json
+import math
 import re
 
 SCHEMA = 'HD2SavedPackageContexts1'
@@ -49,6 +50,49 @@ def identity(project_id, archive_name, patch_name, domain):
     return '|'.join((project, archive, patch, domain))
 
 
+def _validate_morph_recipe(recipe):
+    """Validate the small persistent recipe, never accept embedded mesh payloads."""
+    if (not isinstance(recipe, dict)
+            or set(recipe) != {'schema', 'source_sha256', 'auto_lods', 'save_use_auto_smooth', 'units'}
+            or recipe.get('schema') != 'HD2MorphRecipe1'
+            or not isinstance(recipe.get('source_sha256'), str)
+            or re.fullmatch(r'[0-9a-f]{64}', recipe['source_sha256']) is None
+            or type(recipe.get('auto_lods')) is not bool
+            or type(recipe.get('save_use_auto_smooth')) is not bool):
+        raise ContextError('形态键重建记录的版本、摘要、LOD 或平滑设置无效')
+    units = recipe['units']
+    if not isinstance(units, dict) or not 1 <= len(units) <= 65536:
+        raise ContextError('形态键重建记录的 Unit 数量无效')
+    mesh_count = 0
+    for unit_id, unit in units.items():
+        if (not isinstance(unit_id, str) or re.fullmatch(r'[0-9a-f]{16}', unit_id) is None
+                or not isinstance(unit, dict) or set(unit) != {'mesh_transform', 'meshes'}):
+            raise ContextError('形态键重建记录的 Unit 身份或结构无效')
+        matrix = unit['mesh_transform']
+        if (not isinstance(matrix, list) or len(matrix) != 4
+                or any(not isinstance(row, list) or len(row) != 4 for row in matrix)):
+            raise ContextError('形态键重建记录的网格变换必须是 4×4 矩阵')
+        for row in matrix:
+            for value in row:
+                try:
+                    valid = type(value) in (int, float) and math.isfinite(value)
+                except OverflowError:
+                    valid = False
+                if not valid:
+                    raise ContextError('形态键重建记录的网格变换包含非法数值')
+        meshes = unit['meshes']
+        if not isinstance(meshes, dict) or not 1 <= len(meshes) <= 65536:
+            raise ContextError('形态键重建记录的网格数量无效')
+        mesh_count += len(meshes)
+        if mesh_count > 65536:
+            raise ContextError('形态键重建记录的总网格数量超过上限')
+        for index, digest in meshes.items():
+            if (not isinstance(index, str) or re.fullmatch(r'0|[1-9][0-9]{0,9}', index) is None
+                    or int(index) > 0xffffffff or not isinstance(digest, str)
+                    or re.fullmatch(r'[0-9a-f]{64}', digest) is None):
+                raise ContextError('形态键重建记录的网格索引或映射摘要无效')
+
+
 def load(raw):
     if not raw:
         return {}
@@ -68,21 +112,62 @@ def load(raw):
                 revision.get(field) != plan.get(field)
                 for field in ('project_id', 'archive_name', 'content_domain'))):
             raise ContextError('物理更新校验记录与部位计划不一致')
+        if 'morph_recipe' in record:
+            _validate_morph_recipe(record['morph_recipe'])
+        for field in ('archive_path', 'patch_path'):
+            if field in record and not isinstance(record[field], str):
+                raise ContextError('已保存封包记录的文件路径无效')
+        locator = record.get('export_patch')
+        if locator is not None:
+            if (not isinstance(locator, dict) or not isinstance(locator.get('path'), str)
+                    or not locator['path'] or not isinstance(locator.get('member', ''), str)
+                    or not re.fullmatch(r'[0-9a-f]{64}', str(locator.get('units_sha256', '')))):
+                raise ContextError('已导出 Patch 的路径或校验记录损坏')
+        ids = record.get('archive_unit_ids')
+        if ids is not None and (not isinstance(ids, list) or not ids
+                or any(not isinstance(value, str) or not value.isdecimal() for value in ids)):
+            raise ContextError('已保存基础 Archive 的 Unit 列表无效')
     return data['records']
 
 
-def store(raw, plan, patch_name, physics_revision):
+def store(raw, plan, patch_name, physics_revision, *, archive_path='', patch_path='', archive_unit_ids=None,
+          morph_recipe=None):
     records = load(raw)
     key = identity(plan.get('project_id'), plan.get('archive_name'), patch_name,
                    plan.get('content_domain'))
     prefix = key.rsplit('|', 1)[0] + '|'
     if any(candidate.startswith(prefix) and candidate != key for candidate in records):
         raise ContextError('同一 Patch 不能混存身体和头盔，请分别存储头和身体')
-    records[key] = dict(plan=deepcopy(plan), patch_name=str(patch_name).lower(),
-                        physics_revision=deepcopy(physics_revision))
+    previous = records.get(key, {})
+    record = dict(plan=deepcopy(plan), patch_name=str(patch_name).lower(),
+                  physics_revision=deepcopy(physics_revision),
+                  archive_path=str(archive_path), patch_path=str(patch_path))
+    if morph_recipe is not None:
+        _validate_morph_recipe(morph_recipe)
+        record['morph_recipe'] = deepcopy(morph_recipe)
+    if archive_unit_ids:
+        record['archive_unit_ids'] = sorted({str(int(value)) for value in archive_unit_ids}, key=int)
+    # A new model save invalidates a previous disk baseline. Re-saving identical
+    # inputs may retain the published locator, including an output ZIP member.
+    if previous.get('physics_revision') == physics_revision and previous.get('export_patch'):
+        record['export_patch'] = deepcopy(previous['export_patch'])
+    records[key] = record
     result = json.dumps(dict(schema=SCHEMA, records=records), ensure_ascii=False,
                         sort_keys=True, separators=(',', ':'), allow_nan=False)
     load(result)  # Reject a mismatched revision before caller mutates its scene.
+    return result
+
+
+def bind_export(raw, plan, patch_name, path, units_sha256, *, member=''):
+    """Remember a successfully written model, never replace its source baseline."""
+    records = load(raw)
+    key = identity(plan['project_id'], plan['archive_name'], patch_name, plan['content_domain'])
+    if key not in records:
+        raise ContextError('找不到此次模型导出对应的保存记录')
+    records[key]['export_patch'] = dict(path=str(path), member=str(member), units_sha256=units_sha256)
+    result = json.dumps(dict(schema=SCHEMA, records=records), ensure_ascii=False,
+                        sort_keys=True, separators=(',', ':'), allow_nan=False)
+    load(result)
     return result
 
 

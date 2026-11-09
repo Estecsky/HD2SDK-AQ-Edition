@@ -5930,6 +5930,133 @@
           "key": "37c61642"
         }
       ]
+    },
+    "3ab4af712c5ec0df": {
+      "domain": "BODY",
+      "equipment": [
+        {
+          "unit_ids": [
+            "3c33cf10a26cbb3e",
+            "1770177dd39fe545",
+            "4ca4e63e7357d4b4",
+            "765d732996def801",
+            "42d0377a765934fa",
+            "0b593bace7741493",
+            "01fba62031a1b766",
+            "60b1a9c45b619aa8",
+            "cf3f6471c1700889",
+            "e5de4ebe8a42b1fe",
+            "5dc93d0b397a72d7",
+            "fd8b4473d4e5ee41",
+            "2fe4d041458bbb78",
+            "6a5e6a35c0e737ca",
+            "c07d736a07f14c5f",
+            "431129a532d9f4e9",
+            "5fd5498e1b3d7418",
+            "fb2991eb207c82f1",
+            "4f8751204c1164d6",
+            "daa2ad2647034436",
+            "59f12be4589fa7e0",
+            "10f026a78c8b3faa",
+            "4be411dd67ab547b",
+            "00c3cdc49c9ec49a",
+            "ebd33067cf99fed3"
+          ],
+          "key": "983c1ac3"
+        }
+      ]
+    },
+    "2600aebfd2e3ebc0": {
+      "domain": "HELMET",
+      "equipment": [
+        {
+          "unit_ids": [
+            "1db6efec6ba13c6b"
+          ],
+          "key": "a0350465"
+        }
+      ]
+    },
+    "97b5edb328db59b5": {
+      "domain": "BODY",
+      "equipment": [
+        {
+          "unit_ids": [
+            "3c33cf10a26cbb3e",
+            "8201f6080241f3cf",
+            "37469e94e7389d1f",
+            "fa37eb0eeef6ac6a",
+            "ebf705e439e23055",
+            "bced5c06c52a9d7b",
+            "854d587e0c3db65f",
+            "d608c19eabf0eb72",
+            "513c1c12025a2e08",
+            "a86abf2feb081d37",
+            "06956b36ec18f2b3",
+            "4887584d36653ad8",
+            "b5195208aae41d45",
+            "1e9b81a81256512b",
+            "91f5042fa52d2e10",
+            "82a8faa4126148e4"
+          ],
+          "key": "0b2045c7"
+        }
+      ]
+    },
+    "f6e9a778084c023a": {
+      "domain": "HELMET",
+      "equipment": [
+        {
+          "unit_ids": [
+            "8ac333b9c32c2ec7"
+          ],
+          "key": "7462879a"
+        }
+      ]
+    },
+    "3953b30dc9ae1114": {
+      "domain": "BODY",
+      "equipment": [
+        {
+          "unit_ids": [
+            "3c33cf10a26cbb3e",
+            "36424fb957f945c7",
+            "76cd3ef204c26bc2",
+            "7c8c12727f799a59",
+            "abab9cbb80166b2c",
+            "0acb439ebf63f7b5",
+            "8a4300610664a136",
+            "a4c2cfe520de1412",
+            "ce64cc2f3d7af838",
+            "d61b2febc4fa94c9",
+            "475d91789c6825ee",
+            "969b7ab6acb5111e",
+            "e3aa0642f33cd7be",
+            "82b6442d38537f5c",
+            "5404206bd2dbadf4",
+            "b3a1290a75cc859c",
+            "5217931ef73dbfa1",
+            "a878e33022069fcc",
+            "8a7dc53decdee349",
+            "7bd18c68155b1983",
+            "b9b2636afe871b7b",
+            "db7d59b7166f34ad",
+            "86a87a7abfcfc5a4"
+          ],
+          "key": "a2441063"
+        }
+      ]
+    },
+    "5eb938fd7f03bcd8": {
+      "domain": "HELMET",
+      "equipment": [
+        {
+          "unit_ids": [
+            "23f660aef3fc6e3b"
+          ],
+          "key": "8f8192c1"
+        }
+      ]
     }
   },
   "bfm_catalog_update": {
@@ -5947,5 +6074,16 @@
       "BFM-220"
     ],
     "verification": "Exact decimal semantic IDs matched retained equipment registry Unit identities; body and helmet keys joined by Archive. Save/export/visual acceptance remains pending."
+  },
+  "ss_catalog_update": {
+    "armor_codes": [
+      "SS-33",
+      "SS-500",
+      "SS-15"
+    ],
+    "steam_build": "26251122",
+    "registry_source": "https://github.com/xypwn/filediver/blob/bb0834db309d94a41a011d4cacc00744ec8a60ff/datalibrary/generated_customization_armor_sets.dl_bin",
+    "registry_sha256": "9dab2ea0b40a11e5d3b16eb5bd3d3e7d87fe61f34c0a060313162c82d3fe6274",
+    "verification": "Registry content hash matched game.dll; each equipment Package ID and Unit set matched the stock Archive TOC, including the shared body Unit outside those Archives."
   }
 }

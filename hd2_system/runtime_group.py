@@ -8,10 +8,10 @@ from pathlib import Path
 import re
 import tempfile
 import zipfile
-from . import mod_icon
+from . import mod_icon, morph_format
 
 LIMIT = 256 * 1024 * 1024
-LEAF = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(rigbin|hd2phys|hd2shared|hd2pose|hd2preview|ini|hd2author)\Z')
+LEAF = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(rigbin|hd2phys|hd2shared|hd2pose|hd2preview|hd2morph|ini|hd2author)\Z')
 IDENTITY = re.compile(r'([0-9a-f]{32})\.([0-9a-f]{16})\.rigbin\Z')
 
 
@@ -41,6 +41,8 @@ def read_member(path):
                     raise ValueError('配套中包含多个 Mod 图标')
                 icon = mod_icon.validate_member(name, archive.read(entry))
                 continue
+            if not morph_format.EXPORT_AVAILABLE and name.lower().endswith(morph_format.SUFFIX):
+                raise ValueError(morph_format.EXPORT_UNAVAILABLE + '，无法合并含形态键数据的配套 ZIP')
             if (not name.startswith('HD2IndependentRig/') or
                     not LEAF.fullmatch(name[len('HD2IndependentRig/'):]) or
                     (entry.external_attr >> 16) & 0xf000 == 0xa000):
@@ -51,6 +53,12 @@ def read_member(path):
         match = IDENTITY.fullmatch(name.split('/')[-1])
         if match:
             identities.add(match.groups())
+        if name.endswith('.hd2morph'):
+            document = morph_format.decode(data)
+            identity = document['project_id'], document['archive_id']
+            if name != 'HD2IndependentRig/' + '.'.join(identity) + morph_format.SUFFIX:
+                raise ValueError('形态键配套文件名与内部项目/Archive 身份不一致')
+            identities.add(identity)
         if name.endswith('.hd2shared'):
             from .shared_physics import HEADER, MAGIC
             if len(data) < HEADER.size:

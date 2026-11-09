@@ -3557,6 +3557,91 @@
         "f0462d781cdf8f0d",
         "fe00f8aa9f0f557c"
       ]
+    },
+    "3ab4af712c5ec0df": {
+      "equipment_key": "983c1ac3",
+      "display_name": "SS-33 “拟态元帅”",
+      "manifest_label": "A_3AB4AF71",
+      "unit_ids": [
+        "3c33cf10a26cbb3e",
+        "1770177dd39fe545",
+        "4ca4e63e7357d4b4",
+        "765d732996def801",
+        "42d0377a765934fa",
+        "0b593bace7741493",
+        "01fba62031a1b766",
+        "60b1a9c45b619aa8",
+        "cf3f6471c1700889",
+        "e5de4ebe8a42b1fe",
+        "5dc93d0b397a72d7",
+        "fd8b4473d4e5ee41",
+        "2fe4d041458bbb78",
+        "6a5e6a35c0e737ca",
+        "c07d736a07f14c5f",
+        "431129a532d9f4e9",
+        "5fd5498e1b3d7418",
+        "fb2991eb207c82f1",
+        "4f8751204c1164d6",
+        "daa2ad2647034436",
+        "59f12be4589fa7e0",
+        "10f026a78c8b3faa",
+        "4be411dd67ab547b",
+        "00c3cdc49c9ec49a",
+        "ebd33067cf99fed3"
+      ]
+    },
+    "97b5edb328db59b5": {
+      "equipment_key": "0b2045c7",
+      "display_name": "SS-500 “苍白检察官”",
+      "manifest_label": "A_97B5EDB3",
+      "unit_ids": [
+        "3c33cf10a26cbb3e",
+        "8201f6080241f3cf",
+        "37469e94e7389d1f",
+        "fa37eb0eeef6ac6a",
+        "ebf705e439e23055",
+        "bced5c06c52a9d7b",
+        "854d587e0c3db65f",
+        "d608c19eabf0eb72",
+        "513c1c12025a2e08",
+        "a86abf2feb081d37",
+        "06956b36ec18f2b3",
+        "4887584d36653ad8",
+        "b5195208aae41d45",
+        "1e9b81a81256512b",
+        "91f5042fa52d2e10",
+        "82a8faa4126148e4"
+      ]
+    },
+    "3953b30dc9ae1114": {
+      "equipment_key": "a2441063",
+      "display_name": "SS-15 “焦点”",
+      "manifest_label": "A_3953B30D",
+      "unit_ids": [
+        "3c33cf10a26cbb3e",
+        "36424fb957f945c7",
+        "76cd3ef204c26bc2",
+        "7c8c12727f799a59",
+        "abab9cbb80166b2c",
+        "0acb439ebf63f7b5",
+        "8a4300610664a136",
+        "a4c2cfe520de1412",
+        "ce64cc2f3d7af838",
+        "d61b2febc4fa94c9",
+        "475d91789c6825ee",
+        "969b7ab6acb5111e",
+        "e3aa0642f33cd7be",
+        "82b6442d38537f5c",
+        "5404206bd2dbadf4",
+        "b3a1290a75cc859c",
+        "5217931ef73dbfa1",
+        "a878e33022069fcc",
+        "8a7dc53decdee349",
+        "7bd18c68155b1983",
+        "b9b2636afe871b7b",
+        "db7d59b7166f34ad",
+        "86a87a7abfcfc5a4"
+      ]
     }
   },
   "remote_reference_targets": {
@@ -14664,6 +14749,402 @@
         "e79251f8f34d351a"
       ],
       "unclassified_parts": {}
+    },
+    "3ab4af712c5ec0df": {
+      "display_name": "SS-33 “拟态元帅”",
+      "armor_code": "SS-33",
+      "domain": "BODY",
+      "archive_evidence": "Workbook exact IDs + current stock Archive TOC + maintained hashlist",
+      "runtime_binding_verified": true,
+      "semantic_unit_ids": {
+        "Torso_Armor": [
+          "1220518000076734378",
+          "6967536759330675368"
+        ],
+        "LeftArm": [
+          "6905506478333719576",
+          "16563763059785642494"
+        ],
+        "RightArm": [
+          "18098157016613421809",
+          "6757999834264400599"
+        ],
+        "Hips": [
+          "6481009598502250464",
+          "3451112193230879608"
+        ],
+        "Torso": [
+          "5468515490159350907",
+          "14933765329123281033"
+        ],
+        "LeftLeg": [
+          "817750421148013715"
+        ],
+        "RightLeg": [
+          "142890470394148710"
+        ]
+      },
+      "unit_ids": [
+        "10f026a78c8b3faa",
+        "60b1a9c45b619aa8",
+        "5fd5498e1b3d7418",
+        "e5de4ebe8a42b1fe",
+        "fb2991eb207c82f1",
+        "5dc93d0b397a72d7",
+        "59f12be4589fa7e0",
+        "2fe4d041458bbb78",
+        "4be411dd67ab547b",
+        "cf3f6471c1700889",
+        "0b593bace7741493",
+        "01fba62031a1b766"
+      ],
+      "unclassified_parts": {
+        "左肩甲（清瘦）": [
+          "16992979041421754067"
+        ],
+        "右肩甲（清瘦）": [
+          "55113864783512730"
+        ],
+        "大腿部件（清瘦）": [
+          "5730638250009257174"
+        ],
+        "胸甲配件（清瘦）": [
+          "15754344826407175222"
+        ],
+        "左肩甲（健壮）": [
+          "4832689664644740329"
+        ],
+        "右肩甲（健壮）": [
+          "13870369326607977567"
+        ],
+        "大腿部件（健壮）": [
+          "18269771577642315329"
+        ],
+        "胸甲配件（健壮）": [
+          "7664680394933352394"
+        ],
+        "左手小臂": [
+          "1688875689452758341"
+        ],
+        "小腿装甲左": [
+          "8529099891771635713"
+        ],
+        "右手小臂": [
+          "5522792198960567476"
+        ],
+        "小腿装甲右": [
+          "4814409000770155770"
+        ]
+      },
+      "archive_unit_ids": [
+        "00c3cdc49c9ec49a",
+        "01fba62031a1b766",
+        "0b593bace7741493",
+        "10f026a78c8b3faa",
+        "1770177dd39fe545",
+        "2fe4d041458bbb78",
+        "42d0377a765934fa",
+        "431129a532d9f4e9",
+        "4be411dd67ab547b",
+        "4ca4e63e7357d4b4",
+        "4f8751204c1164d6",
+        "59f12be4589fa7e0",
+        "5dc93d0b397a72d7",
+        "5fd5498e1b3d7418",
+        "60b1a9c45b619aa8",
+        "6a5e6a35c0e737ca",
+        "765d732996def801",
+        "c07d736a07f14c5f",
+        "cf3f6471c1700889",
+        "daa2ad2647034436",
+        "e5de4ebe8a42b1fe",
+        "ebd33067cf99fed3",
+        "fb2991eb207c82f1",
+        "fd8b4473d4e5ee41"
+      ],
+      "archive_units_verified": true,
+      "equipment_keys": [
+        "983c1ac3"
+      ]
+    },
+    "2600aebfd2e3ebc0": {
+      "display_name": "SS-33 “拟态元帅”",
+      "armor_code": "SS-33",
+      "domain": "HELMET",
+      "archive_evidence": "Workbook exact IDs + current stock Archive TOC + maintained hashlist",
+      "runtime_binding_verified": true,
+      "semantic_unit_ids": {
+        "Head": [
+          "2141162471558298731"
+        ]
+      },
+      "unit_ids": [
+        "1db6efec6ba13c6b"
+      ],
+      "unclassified_parts": {},
+      "archive_unit_ids": [
+        "1db6efec6ba13c6b"
+      ],
+      "archive_units_verified": true,
+      "equipment_keys": [
+        "a0350465"
+      ]
+    },
+    "97b5edb328db59b5": {
+      "display_name": "SS-500 “苍白检察官”",
+      "armor_code": "SS-500",
+      "domain": "BODY",
+      "archive_evidence": "Workbook exact IDs + current stock Archive TOC + maintained hashlist",
+      "runtime_binding_verified": true,
+      "semantic_unit_ids": {
+        "Torso_Armor": [
+          "2205499001390125355",
+          "17003065395942404181"
+        ],
+        "LeftArm": [
+          "474403219390919347",
+          "9605430878645630559"
+        ],
+        "RightArm": [
+          "5226242981235079896",
+          "15422789811163949938"
+        ],
+        "Hips": [
+          "13049551592463015237",
+          "5853584479349255688"
+        ],
+        "Torso": [
+          "10517317107474837008",
+          "13613638432758340987"
+        ],
+        "LeftLeg": [
+          "3983045282827377951"
+        ],
+        "RightLeg": [
+          "18030138082572282986"
+        ]
+      },
+      "unit_ids": [
+        "1e9b81a81256512b",
+        "ebf705e439e23055",
+        "06956b36ec18f2b3",
+        "854d587e0c3db65f",
+        "4887584d36653ad8",
+        "d608c19eabf0eb72",
+        "b5195208aae41d45",
+        "513c1c12025a2e08",
+        "91f5042fa52d2e10",
+        "bced5c06c52a9d7b",
+        "37469e94e7389d1f",
+        "fa37eb0eeef6ac6a"
+      ],
+      "unclassified_parts": {
+        "胸甲配件（清瘦）": [
+          "9415050603607967972"
+        ],
+        "胸甲配件（健壮）": [
+          "12135722358430768439"
+        ]
+      },
+      "archive_unit_ids": [
+        "06956b36ec18f2b3",
+        "1e9b81a81256512b",
+        "37469e94e7389d1f",
+        "4887584d36653ad8",
+        "513c1c12025a2e08",
+        "8201f6080241f3cf",
+        "82a8faa4126148e4",
+        "854d587e0c3db65f",
+        "91f5042fa52d2e10",
+        "a86abf2feb081d37",
+        "b5195208aae41d45",
+        "bced5c06c52a9d7b",
+        "d608c19eabf0eb72",
+        "ebf705e439e23055",
+        "fa37eb0eeef6ac6a"
+      ],
+      "archive_units_verified": true,
+      "equipment_keys": [
+        "0b2045c7"
+      ]
+    },
+    "f6e9a778084c023a": {
+      "display_name": "SS-500 “苍白检察官”",
+      "armor_code": "SS-500",
+      "domain": "HELMET",
+      "archive_evidence": "Workbook exact IDs + current stock Archive TOC + maintained hashlist",
+      "runtime_binding_verified": true,
+      "semantic_unit_ids": {
+        "Head": [
+          "9998892470629052103"
+        ]
+      },
+      "unit_ids": [
+        "8ac333b9c32c2ec7"
+      ],
+      "unclassified_parts": {},
+      "archive_unit_ids": [
+        "8ac333b9c32c2ec7"
+      ],
+      "archive_units_verified": true,
+      "equipment_keys": [
+        "7462879a"
+      ]
+    },
+    "e2a2e33407398d9e": {
+      "display_name": "IX-“寂域行者”",
+      "armor_code": "IX-Voidwalker",
+      "domain": "HELMET",
+      "archive_evidence": "Workbook exact IDs + current stock Archive TOC + maintained hashlist",
+      "runtime_binding_verified": true,
+      "semantic_unit_ids": {
+        "Head": [
+          "13108926888288924404"
+        ]
+      },
+      "unit_ids": [
+        "b5ec438d030732f4"
+      ],
+      "unclassified_parts": {},
+      "archive_unit_ids": [
+        "b5ec438d030732f4"
+      ],
+      "archive_units_verified": true,
+      "equipment_keys": [
+        "6478678e"
+      ]
+    },
+    "3953b30dc9ae1114": {
+      "display_name": "SS-15 “焦点”",
+      "armor_code": "SS-15",
+      "domain": "BODY",
+      "archive_evidence": "Workbook exact IDs + current stock Archive TOC + maintained hashlist",
+      "runtime_binding_verified": true,
+      "semantic_unit_ids": {
+        "Torso_Armor": [
+          "8922066715460442499",
+          "11872280150707934226"
+        ],
+        "LeftArm": [
+          "12943671928942265756",
+          "15427977638156342473"
+        ],
+        "RightArm": [
+          "5915358396780756897",
+          "5142426296733148654"
+        ],
+        "Hips": [
+          "9979349219080594249",
+          "16404931477268912062"
+        ],
+        "Torso": [
+          "13380866754059115387",
+          "14872236372751218744"
+        ],
+        "LeftLeg": [
+          "777789709746436021"
+        ],
+        "RightLeg": [
+          "9962807217392754998"
+        ]
+      },
+      "unit_ids": [
+        "7bd18c68155b1983",
+        "a4c2cfe520de1412",
+        "b3a1290a75cc859c",
+        "d61b2febc4fa94c9",
+        "5217931ef73dbfa1",
+        "475d91789c6825ee",
+        "8a7dc53decdee349",
+        "e3aa0642f33cd7be",
+        "b9b2636afe871b7b",
+        "ce64cc2f3d7af838",
+        "0acb439ebf63f7b5",
+        "8a4300610664a136"
+      ],
+      "unclassified_parts": {
+        "左肩甲（清瘦）": [
+          "9703140064792397220"
+        ],
+        "右肩甲（清瘦）": [
+          "15815896109285323949"
+        ],
+        "大腿部件（清瘦）": [
+          "12139702591445966796"
+        ],
+        "左肩甲（健壮）": [
+          "6053999446563991028"
+        ],
+        "右肩甲（健壮）": [
+          "9418790631701184348"
+        ],
+        "大腿部件（健壮）": [
+          "10852402652079526174"
+        ],
+        "左手小臂": [
+          "3909775083974510023"
+        ],
+        "小腿装甲左": [
+          "8974568440416803417"
+        ],
+        "右手小臂": [
+          "8560567675884039106"
+        ],
+        "小腿装甲右": [
+          "12370153130624969516"
+        ]
+      },
+      "archive_unit_ids": [
+        "0acb439ebf63f7b5",
+        "36424fb957f945c7",
+        "475d91789c6825ee",
+        "5217931ef73dbfa1",
+        "5404206bd2dbadf4",
+        "76cd3ef204c26bc2",
+        "7bd18c68155b1983",
+        "7c8c12727f799a59",
+        "82b6442d38537f5c",
+        "86a87a7abfcfc5a4",
+        "8a4300610664a136",
+        "8a7dc53decdee349",
+        "969b7ab6acb5111e",
+        "a4c2cfe520de1412",
+        "a878e33022069fcc",
+        "abab9cbb80166b2c",
+        "b3a1290a75cc859c",
+        "b9b2636afe871b7b",
+        "ce64cc2f3d7af838",
+        "d61b2febc4fa94c9",
+        "db7d59b7166f34ad",
+        "e3aa0642f33cd7be"
+      ],
+      "archive_units_verified": true,
+      "equipment_keys": [
+        "a2441063"
+      ]
+    },
+    "5eb938fd7f03bcd8": {
+      "display_name": "SS-15 “焦点”",
+      "armor_code": "SS-15",
+      "domain": "HELMET",
+      "archive_evidence": "Workbook exact IDs + current stock Archive TOC + maintained hashlist",
+      "runtime_binding_verified": true,
+      "semantic_unit_ids": {
+        "Head": [
+          "2591364940132281915"
+        ]
+      },
+      "unit_ids": [
+        "23f660aef3fc6e3b"
+      ],
+      "unclassified_parts": {},
+      "archive_unit_ids": [
+        "23f660aef3fc6e3b"
+      ],
+      "archive_units_verified": true,
+      "equipment_keys": [
+        "8f8192c1"
+      ]
     }
   }
 }

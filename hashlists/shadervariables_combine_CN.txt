@@ -1030,6 +1030,7 @@ LUT遮罩锐度 MaskSharpnessLut
 次表面厚度 SubsurfaceThickness
 次表面色调 SubsurfaceTint
 次表面包裹 SubsurfaceWrap
+接管次表面散射 SubsurfaceOverrideEnabled
 太阳颜色 SunCol
 太阳颜色覆盖 SunColorOverride
 太阳方向 SunDir
@@ -1059,7 +1060,7 @@ LUT遮罩锐度 MaskSharpnessLut
 远景细节平铺 TilingVistaDetail
 时间加法 TimeAdd
 时间乘数 TimeMult
-时间乘数 TimeMultiplier
+时间倍率 TimeMultiplier
 色调 Tint
 色调01 Tint01
 色调02 Tint02
@@ -28285,3 +28286,10 @@ C移动2 CMovement2
 L炮塔枪管 LTurretBarrel
 UpperButtEntrails11 UpperButtEntrails11
 G废墟碎石01 GRubble01
+金属度倍率 MetallicScale
+粗糙度倍率 RoughnessScale
+粗糙度偏移 RoughnessBias
+多色发光启用 MulticolorEmissionEnabled
+不透明度阈值 OpacityThrehold
+亮度增幅 BrightnessIncrease
+亮度降幅 BrightnessDecrease

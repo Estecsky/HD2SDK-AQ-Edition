@@ -1,5 +1,6 @@
 from math import ceil, sqrt
 import math
+import struct
 
 import mathutils
 import bpy
@@ -10,6 +11,7 @@ from copy import deepcopy
 from ..utils.memoryStream import MemoryStream, MakeTenBitUnsigned, TenBitUnsigned
 from ..utils.logger import PrettyPrint
 from .hash import murmur32_hash
+from .gf2_tangent_codec import pack_uv0_tangent
 from ..utils.constants import *
 from ..preferences.access import AQ_PublicClass , AQ_StaticMeshError
 from .material import AddMaterialToBlend_EMPTY
@@ -57,6 +59,91 @@ def _write_optional_lod_group_region(stream, has_lod_section, prefix, data):
     lod_offset = stream.tell() if has_lod_section else 0
     stream.bytes(data, len(data))
     return lod_offset
+
+
+def update_rebuilt_mesh_extents(unit):
+    """Expand saved local ranges for rebuilt render meshes only.
+
+    Native helper/proxy streams and unedited meshes keep their opaque metadata.
+    The verified10800438 non-composite layout stores min/max in unk2[:24].
+    Plans are validated in full before applying any range mutation.
+    """
+    report = {"updated": [], "preserved": []}
+    rebuilt = [mesh for mesh in unit.RawMeshes
+               if getattr(mesh, "DEV_RebuiltExtents", False)]
+    if not rebuilt:
+        return report
+    if unit.CompositeRef or unit.Version != 10800438:
+        report["preserved"].append({"reason": "unsupported_unit_layout"})
+        return report
+
+    def outward_float32(value, lower):
+        if not math.isfinite(value):
+            raise ValueError("Rebuilt mesh extent is non-finite")
+        try:
+            packed = struct.pack("<f", value)
+        except (OverflowError, struct.error) as exc:
+            raise ValueError("Rebuilt mesh extent exceeds float32") from exc
+        rounded = struct.unpack("<f", packed)[0]
+        if not math.isfinite(rounded):
+            raise ValueError("Rebuilt mesh extent exceeds float32")
+        if (lower and rounded > value) or (not lower and rounded < value):
+            if rounded == 0:
+                bits = 0x80000001 if lower else 1
+            else:
+                bits = struct.unpack("<I", packed)[0]
+                bits += (1 if rounded < 0 else -1) if lower else (-1 if rounded < 0 else 1)
+            rounded = struct.unpack("<f", struct.pack("<I", bits))[0]
+            if not math.isfinite(rounded):
+                raise ValueError("Rebuilt mesh extent exceeds float32")
+        return rounded
+
+    plans = []
+    seen = set()
+    for mesh in rebuilt:
+        index = mesh.MeshInfoIndex
+        if not 0 <= index < len(unit.DEV_MeshInfoMap):
+            raise ValueError("Rebuilt mesh index is out of range")
+        mapped = unit.DEV_MeshInfoMap[index]
+        if not 0 <= mapped < len(unit.MeshInfoArray) or mapped in seen:
+            raise ValueError("Rebuilt mesh extent mapping is invalid")
+        seen.add(mapped)
+        info = unit.MeshInfoArray[mapped]
+        if (info.LodIndex < 0 or mesh.IsCullingBody()
+                or getattr(mesh, "DEV_PreserveNativeStream", False)):
+            report["preserved"].append({"mesh": index, "reason": "native_helper_or_proxy"})
+            continue
+        points = mesh.VertexPositions
+        if not points:
+            report["preserved"].append({"mesh": index, "reason": "empty_mesh"})
+            continue
+        if any(len(point) != 3 or any(not math.isfinite(float(v)) for v in point)
+               for point in points):
+            raise ValueError("Rebuilt mesh positions must be finite vec3 values")
+        raw = bytes(info.unk2)
+        if len(raw) != 32:
+            raise ValueError("Rebuilt mesh extent layout is unsupported")
+        old = list(struct.unpack("<6f", raw[:24]))
+        if (not all(math.isfinite(v) for v in old)
+                or any(old[j] > old[j + 3] for j in range(3))):
+            raise ValueError("Stored mesh range is invalid")
+        actual = [min(float(p[j]) for p in points) for j in range(3)]
+        actual += [max(float(p[j]) for p in points) for j in range(3)]
+        if all(actual[j] >= old[j] - 1e-6 and actual[j + 3] <= old[j + 3] + 1e-6
+               for j in range(3)):
+            report["preserved"].append({"mesh": index, "reason": "range_already_contains_geometry"})
+            continue
+        margins = [max(0.05, (actual[j + 3] - actual[j]) * 0.1) for j in range(3)]
+        new = [outward_float32(min(old[j], actual[j] - margins[j]), True) for j in range(3)]
+        new += [outward_float32(max(old[j + 3], actual[j + 3] + margins[j]), False)
+                for j in range(3)]
+        data = struct.pack("<6f", *new) + raw[24:]
+        plans.append((info, data))
+        report["updated"].append({"mesh": index, "lod": info.LodIndex,
+                                  "old": old, "new": new, "actual": actual})
+    for info, data in plans:
+        info.unk2 = bytearray(data)
+    return report
 
 class StingrayMeshFile:
     def __init__(self):
@@ -1314,6 +1401,7 @@ class RawMeshClass:
         self.LodIndex         = -1
         self.MeshID           = 0
         self.DEV_Use32BitIndices = False
+        self.DEV_PackedNormalWords = {}
         self.DEV_BoneInfo      = None
         self.DEV_BoneInfoIndex = 0
         self.DEV_Transform     = None
@@ -1337,6 +1425,7 @@ class RawMeshClass:
         return True
 
     def InitBlank(self, numVertices, numIndices, numUVs, numBoneIndices):
+        self.DEV_PackedNormalWords.clear()
         self.VertexPositions    = [[0,0,0] for n in range(numVertices)]
         self.VertexNormals      = [[0,0,0] for n in range(numVertices)]
         self.VertexTangents     = [[0,0,0] for n in range(numVertices)]
@@ -1350,6 +1439,7 @@ class RawMeshClass:
             self.VertexBoneIndices.append([[0,0,0,0] for n in range(numVertices)])
 
     def ReInitVerts(self, numVertices):
+        self.DEV_PackedNormalWords.clear()
         self.VertexPositions    = [[0,0,0] for n in range(numVertices)]
         self.VertexNormals      = [[0,0,0] for n in range(numVertices)]
         self.VertexTangents     = [[0,0,0] for n in range(numVertices)]
@@ -1535,9 +1625,16 @@ class SerializeFunctions:
                 mesh.VertexNormals[vidx] = norm[:3]
             else:
                 mesh.VertexNormals[vidx] = decode_packed_oct_norm(norm)
+                if norm >> 20:
+                    mesh.DEV_PackedNormalWords[vidx] = norm
         else:
-            norm = encode_packed_oct_norm(*mathutils.Vector(mesh.VertexNormals[vidx]).normalized().to_tuple())
-            norm = component.SerializeComponent(gpu, norm)
+            normal = tuple(mesh.VertexNormals[vidx])
+            packed = mesh.DEV_PackedNormalWords.get(vidx)
+            if packed is not None and decode_packed_oct_norm(packed) == normal:
+                norm = packed
+            else:
+                norm = encode_packed_oct_norm(*mathutils.Vector(normal).normalized().to_tuple())
+            component.SerializeComponent(gpu, norm)
 
     def SerializeTangentComponent(gpu, mesh, component, vidx):
         mesh.VertexTangents[vidx] = component.SerializeComponent(gpu, mesh.VertexTangents[vidx])
@@ -1549,7 +1646,10 @@ class SerializeFunctions:
         mesh.VertexUVs[component.Index][vidx] = component.SerializeComponent(gpu, mesh.VertexUVs[component.Index][vidx])
 
     def SerializeColorComponent(gpu, mesh, component, vidx):
-        mesh.VertexColors[vidx] = component.SerializeComponent(gpu, mesh.VertexColors[vidx])
+        value = component.SerializeComponent(gpu, mesh.VertexColors[vidx])
+        # AutoLods shares normalized vertex data across its shallow copies.
+        if gpu.IsReading():
+            mesh.VertexColors[vidx] = value
 
     def SerializeBoneIndexComponent(gpu, mesh, component, vidx):
         try:
@@ -1778,10 +1878,50 @@ def duplicate(obj, data=True, actions=True, collection=None):
     bpy.context.collection.objects.link(obj_copy)
     return obj_copy
 
+_GF2_FRAME_PROPERTY = "_HD2SDK_PreparedGF2FrameLayer"
+
+
+def _capture_gf2_uv0_frames(mesh):
+    color = mesh.color_attributes.active_color
+    if (color is None or color.name != "GF2_COLOR0"
+            or color.domain != 'CORNER' or color.data_type != 'BYTE_COLOR'):
+        return None
+    if hasattr(mesh, 'calc_normals_split'):
+        mesh.calc_normals_split()
+    has_tangents = False
+    if mesh.uv_layers:
+        try:
+            mesh.calc_tangents(uvmap=mesh.uv_layers[0].name)
+            has_tangents = True
+        except RuntimeError:
+            # The shader treats absent frame markers as authored-normal fallback.
+            pass
+    words = []
+    for loop in mesh.loops:
+        normal = loop.normal.normalized()
+        word = encode_packed_oct_norm(*normal)
+        if has_tangents:
+            tangent = loop.tangent
+            valid = tangent.length > .9 and abs(tangent.dot(normal)) < 1e-4
+            if valid:
+                word = pack_uv0_tangent(word, tangent, loop.bitangent_sign)
+        words.append(word if word < 2**31 else word - 2**32)
+    if has_tangents:
+        mesh.free_tangents()
+    frame = mesh.attributes.new(".HD2SDK_GF2_UV0_FRAME", 'INT', 'CORNER')
+    frame.data.foreach_set('value', words)
+    return frame.name
+
+
 def PrepareMesh(og_object):
     if og_object.data.shape_keys is not None:
         raise ValueError(f"网格“{og_object.name}”仍有形态键，请先手动删除形态键后再保存")
     object = duplicate(og_object)
+    if _GF2_FRAME_PROPERTY in object:
+        del object[_GF2_FRAME_PROPERTY]
+    frame_name = _capture_gf2_uv0_frames(object.data)
+    if frame_name is not None:
+        object[_GF2_FRAME_PROPERTY] = frame_name
     bpy.ops.object.select_all(action='DESELECT')
     bpy.context.view_layer.objects.active = object
     if og_object.get("HD2SDK_IndependentExportBonesOnly", False):
@@ -1810,6 +1950,33 @@ def PrepareMesh(og_object):
     # split edges
     bmesh.ops.split_edges(bm, edges=sharp_edges)
     bmesh.ops.split_edges(bm, edges=boundary_seams)
+
+    # The GPU stream stores one RGBA and one packed frame per vertex.
+    # Capture the frame before topology splits so a UV0 tangent is the same
+    # MikkTSpace corner frame that authored GF2_COLOR0.
+    active_color = object.data.vertex_colors.active
+    color_layer = bm.loops.layers.color.get(active_color.name) if active_color is not None else None
+    frame_layer = bm.loops.layers.int.get(frame_name) if frame_name is not None else None
+    if frame_name is not None:
+        assert frame_layer is not None and color_layer is not None
+    if color_layer is not None:
+        def corner_key(loop):
+            color = tuple(loop[color_layer])
+            return color if frame_layer is None else (color, loop[frame_layer])
+
+        for vertex in list(bm.verts):
+            keys = {loop.face: corner_key(loop) for loop in vertex.link_loops}
+            if len(set(keys.values())) <= 1:
+                continue
+            seams = [
+                edge for edge in vertex.link_edges
+                if len({keys[face] for face in edge.link_faces}) > 1
+            ]
+            groups = bmesh.utils.vert_separate(vertex, seams) if seams else (vertex,)
+            for group in groups:
+                # Distinct disconnected fans may meet only at the vertex.
+                if len({corner_key(loop) for loop in group.link_loops}) > 1:
+                    bmesh.utils.vert_separate(group, list(group.link_edges))
     # update mesh
     bm.to_mesh(object.data)
     bm.free()
@@ -2371,10 +2538,19 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
             mesh.create_normals_split()
         mesh.calc_normals_split()
 
-    for loop in mesh.loops:
-        normals[loop.vertex_index]    = loop.normal.normalized()
-        #tangents[loop.vertex_index]   = loop.tangent.normalized()
-        #bitangents[loop.vertex_index] = loop.bitangent.normalized()
+    frame_name = object.get(_GF2_FRAME_PROPERTY)
+    packed_normal_words = {}
+    if frame_name is not None:
+        frames = mesh.attributes[frame_name]
+        assert frames.domain == 'CORNER' and frames.data_type == 'INT'
+        for loop in mesh.loops:
+            packed = frames.data[loop.index].value & 0xffffffff
+            vertex = loop.vertex_index
+            assert packed_normal_words.setdefault(vertex, packed) == packed
+            normals[vertex] = decode_packed_oct_norm(packed)
+    else:
+        for loop in mesh.loops:
+            normals[loop.vertex_index] = loop.normal.normalized()
     # if fuckywuckynormalwormal do this bullshit
     #LoadNormalPalette()
     #normals = NormalsFromPalette(normals)
@@ -2945,8 +3121,11 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
     for tmp in temp_faces: faces.extend(tmp)
 
     NewMesh = RawMeshClass()
+    from ..hd2_system.morph_blender import capture_prepared
+    NewMesh.DEV_MorphData = capture_prepared(object)
     NewMesh.VertexPositions     = vertices
     NewMesh.VertexNormals       = normals
+    NewMesh.DEV_PackedNormalWords = packed_normal_words
     #NewMesh.VertexTangents      = tangents
     #NewMesh.VertexBiTangents    = bitangents
     NewMesh.VertexColors        = colors
@@ -2958,6 +3137,7 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
     NewMesh.MeshInfoIndex       = og_object["MeshInfoIndex"]
     NewMesh.DEV_BoneInfoIndex   = og_object["BoneInfoIndex"]
     NewMesh.LodIndex            = og_object["BoneInfoIndex"]
+    NewMesh.DEV_RebuiltExtents  = True
     if len(vertices) > 0xffff: NewMesh.DEV_Use32BitIndices = True
     matNum = 0
     for material in NewMesh.Materials:
@@ -2969,6 +3149,8 @@ def GetMeshData(og_object, Global_TocManager, Global_BoneNames):
     if object is not None and object.name:
         PrettyPrint(f"Removing {object.name}")
         bpy.data.objects.remove(object, do_unlink=True)
+        if NewMesh.DEV_MorphData and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
     else:
         PrettyPrint(f"Current object: {object}")
     return NewMesh

@@ -6,6 +6,7 @@ declared equipment descriptors may select them. No blind binary search/replace.
 """
 from copy import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import struct
@@ -18,6 +19,30 @@ UNIT = 0xE0A48D0BE9A7453F
 BONES = 0x18DEAD01056B72E9
 PACKAGE = 0xAD9C6D9ED1E5E77A
 POLICY = "PROJECT_ARCHIVE_ALIASES"
+_ULTRA_HELPER = None
+
+
+def _ultra_helper():
+    """Load the pure identity helper without importing Blender or addon startup."""
+    global _ULTRA_HELPER
+    if _ULTRA_HELPER is None:
+        path = Path(__file__).resolve().parents[1] / 'utils/ultra_material.py'
+        spec = importlib.util.spec_from_file_location('_hd2_owned_ultra_identity', path)
+        _ULTRA_HELPER = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_ULTRA_HELPER)
+    return _ULTRA_HELPER
+
+
+def _ultra_material(entry):
+    if entry.TypeID != materials.MATERIAL_TYPE:
+        return False
+    helper = _ultra_helper()
+    return (helper.is_ultra_main(entry.TocData)
+            or helper.is_embedded_shader_root(entry.TocData, entry.GpuData))
+
+
+def _ultra_materials_dir():
+    return Path(__file__).resolve().parents[1] / 'materials'
 
 
 def private_id(project, kind, original, scope=""):
@@ -97,6 +122,9 @@ def clone_entry(entry, file_id=None, toc=None):
     result.TocData = bytearray(toc if toc is not None else entry.TocData)
     result.GpuData = bytearray(entry.GpuData)
     result.StreamData = bytearray(entry.StreamData)
+    if result.FileID != entry.FileID and _ultra_material(entry):
+        result.GpuData = bytearray(_ultra_helper().rebind_existing_gpu(
+            _ultra_materials_dir(), entry.GpuData, entry.FileID, result.FileID))
     # The output has already been serialized. Do not let a stale LoadedData
     # serialize original references back over these bounded field updates.
     result.IsLoaded = False
@@ -127,8 +155,9 @@ def rewrite_material_textures(data, mapping):
 def isolate_material_entries(project, entries, resolve_stock):
     """One shared, project-owned material namespace, across body and helmet.
 
-    Authoring IDs and pixel/GPU bytes are unchanged; only output FileIDs and
-    material texture-reference fields differ. Private copies also avoid the
+    Authoring IDs and pixel bytes are unchanged. Verified ultra roots also
+    rebind GPU identity metadata; shaders and other GPU bytes are unchanged.
+    Private copies avoid the
     same hand-authored custom ID colliding between unrelated Mod projects.
     """
     indexed = materials.index_entries(entries, only_materials=True)
@@ -146,7 +175,11 @@ def isolate_material_entries(project, entries, resolve_stock):
     for key, entry in sorted(indexed.items()):
         toc = rewrite_material_textures(entry.TocData, textures) if key[1] == materials.MATERIAL_TYPE else bytes(entry.TocData)
         output.append(clone_entry(entry, aliases[key], toc))
-        records.append(dict(source=f"{key[0]:016x}",type=f"{key[1]:016x}",published=f"{aliases[key]:016x}",source_sha256=payload_fingerprint(entry)))
+        record = dict(source=f"{key[0]:016x}",type=f"{key[1]:016x}",published=f"{aliases[key]:016x}",source_sha256=payload_fingerprint(entry))
+        if _ultra_material(entry):
+            record['ultra_identity'] = _ultra_helper().capture_gpu_identity(
+                _ultra_materials_dir(), entry.GpuData, entry.FileID)
+        records.append(record)
     return output, records
 
 
@@ -174,6 +207,10 @@ def restore_authoring_material_entries(project, entries, records):
         restored[key] = clone_entry(entry, reverse[key],toc)
     for row in records:
         key = int(row['published'],16),int(row['type'],16)
+        if 'ultra_identity' in row:
+            restored[key].GpuData = bytearray(_ultra_helper().restore_gpu_identity(
+                _ultra_materials_dir(), indexed[key].GpuData, key[0],
+                row['ultra_identity'], restored[key].FileID))
         if payload_fingerprint(restored[key]) != row['source_sha256']:
             raise IndependentPackagingError("独立材质包反向回读与制作数据摘要不符")
     return list(restored.values())

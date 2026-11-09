@@ -1,4 +1,4 @@
-本地更新时间：2026-09-23 20:04:35.381
+本地更新时间：2026-10-22 21:08:09.234
 0089bbe3e284fcaa#战备#榴弹发射器
 009da023c64d178d#大概环境物体#有虫子地形常见的发光蘑菇
 00c928ec7e330f9e#大概环境物体#None
@@ -961,7 +961,7 @@
 7e5f3d03609f2585#None#None
 7ebe7e615e765cef#None#None
 7ec56e017940a624#建筑#偷油任务相关
-7ed1f941859987b4#大概环境物体,未知#None
+7ed1f941859987b4#大概环境物体,未知#含榴弹、小导弹、无后座、空爆、坦克主炮飞行弹丸
 7f22b24a87dda46d#None#None
 7f37db9b767844c2#战备#磁轨炮
 7f37f5671f6cdbb5#None#机器人杂兵
@@ -1734,7 +1734,7 @@ e5058b82ddb90b57#其他#None
 e54eaa26d836a2bf#盔甲#绿色侦察甲（跑男甲）SC-30
 e556f56d24526a87#已无法搜索#None
 e55ae7176cf7d163#无网格#烟雾贴图？
-e566e3aaf90db459#枪、装备#SG-8 制裁者+GL-15 驱逐者
+e566e3aaf90db459#枪、装备#SG-8 制裁者 + GL-15 驱逐者
 e5679f2764ec134a#大概环境物体#None
 e58c088612773a64#建筑#重启发电机相关
 e5b3b6104fb3a259#其他#None
@@ -2465,13 +2465,13 @@ f8be75b97be4df4c#未知#None
 faedbfbebb16d1d3#大概环境物体#机器人轨道炮相关
 2025.5.13更新——第二次mod失效#None#None
 2fb07d7a9b9252aa#头盔#RE-1861 parade commander“阅兵指挥官”
-39fe1f0308f4514a#盔甲#RE-1861 “阅兵指挥官”parade commander
+39fe1f0308f4514a#盔甲#RE-1861 parade commander“阅兵指挥官”
 b4d15b145b3f7677#头盔#RE-2310 honorary guard“荣誉卫队”
-d923906f8b815987#盔甲#RE-2310 “荣誉卫队”honorary
+d923906f8b815987#盔甲#RE-2310 honorary guard“荣誉卫队”
 94b8a07a98780017#头盔#RE-824 “执旗手”
 f50c7fd427839c47#盔甲#RE-824 “执旗手”
 e829d44fb5653ec4#枪、装备#R-2 修正
-1721eee4581a9c54#枪、装备,音频#G-124 “烟花术”
+1721eee4581a9c54#枪、装备#G-124 “烟花术”
 c40e3b3fa79052ec#战备#CQC-1 唯一真旗
 None#None#None
 03fbef05fbf99b12#大概环境物体#None
@@ -2867,10 +2867,10 @@ a856edff49cfdd95#头盔#A-9 “地狱伞兵”
 1d6dc4216e7ce52d#盔甲#A-9 “地狱伞兵”
 1a2fc86abd27bf5b#头盔#A-35 “侦察者”
 f32d3723bfe55d2f#盔甲#A-35 “侦查者”
-fd3eef9a0329b2c2#枪、装备#MA5C突击步枪 光环
-44dd33af0ef2b0d1#枪、装备#M90A霰弹枪 光环
-e0d35fe7ce80e3f0#枪、装备#M7S冲锋枪 光环
-2a5298e1c2f70c82#枪、装备#M6C/特种作战手枪 光环
+fd3eef9a0329b2c2#枪、装备#MA5C突击步枪（光环）
+44dd33af0ef2b0d1#枪、装备#M90A霰弹枪（光环）
+e0d35fe7ce80e3f0#枪、装备#M7S冲锋枪（光环）
+2a5298e1c2f70c82#枪、装备#M6C/特种作战手枪（光环）
 15c99d0ff8b8cdaf#无网格#None
 1821bea1cde8f4b1#大概环境物体#None
 14cbdc95cf806868#None#None
@@ -3627,7 +3627,7 @@ None#None#None
 96dfb47514226aa6#无网格#None
 9745df22414ac679#其他#某种地形文件
 9af86af53821d557#未知#None
-9b0e4447df81f72e#枪、装备#G-11 铁蒺藜
+None#None#None
 9cf5cb47cbc5b8fb#无网格#None
 9dc0debb512aeb61#无网格#None
 9e9b78cbb4dac41e#未知#None
@@ -4035,13 +4035,13 @@ None#None#None
 4b2ea533e393dccc#None#None
 4b62dfcd862260df#None#None
 4c9ca4defa430f6f#None#None
-534c2c49ca10d168#None#None
+534c2c49ca10d168#战备#TD-110 风暴漩涡（机枪火箭坦克）加特林枪管
 538fefe0b2040459#None#None
 553512fc9bad4e67#None#None
 5598cc418978bbbc#None#None
 560c9de4c61805f2#None#None
 566213f0daa62fc3#None#None
-57fd78ec1eb92f4f#None#None
+57fd78ec1eb92f4f#披风#None
 584313598fd10b3a#None#None
 5a785e765ceefab7#None#None
 5dcaed7759b97fe5#None#None
@@ -4071,7 +4071,7 @@ None#None#None
 7e4997d13a9e72f5#None#None
 80774ff970ca5d96#None#None
 835c2c1651ccae23#大概环境物体#None
-83b33ab726e039d5#None#None
+83b33ab726e039d5#披风#None
 843fcf83284efbc9#None#None
 84a6b14f7d1eb839#None#None
 87769696ccce6c4b#None#None
@@ -4103,7 +4103,7 @@ bc96d2630859e076#大概环境物体#None
 be73f5865a89c6c5#大概环境物体#None
 c1284086f6a1ad7b#None#None
 c237e8d427880040#大概环境物体#None
-c4094551db0870ee#None#None
+c4094551db0870ee#披风#None
 c467c251b67684d2#枪配件#LAS-12 钗 的高容量电池
 c485e7ea5695b6ca#大概环境物体#None
 c630d7c0ea6ceaca#枪配件#LAS-12 钗的聚焦透镜枪口
@@ -4134,6 +4134,306 @@ f8f4b6850e6cd8e7#大概环境物体#None
 fb941519def07496#大概环境物体#None
 fe7db9e4889d93ee#None#None
 ffe889e1c9234af4#大概环境物体#None
+26.10.20#None#None
+5eb938fd7f03bcd8#头盔#SS-15 “焦点”
+3953b30dc9ae1114#盔甲#SS-15 “焦点”
+2600aebfd2e3ebc0#头盔#SS-33 “拟态元帅”
+3ab4af712c5ec0df#盔甲#SS-33 “拟态元帅”
+f6e9a778084c023a#头盔#SS-500 “苍白检察官”
+97b5edb328db59b5#盔甲#SS-500 “苍白检察官”
+ff0ada8dd2ee32cc#枪、装备#R-40 视界者
+7160179c08dd7d81#枪、装备#P-44 迷雾
+9b0e4447df81f72e#枪、装备#G-11 铁蒺藜
+a193a00ce4bbd529#战备#AMW-20 尖峰·3号位
+6f09a6ce25c8ca77#战备#AMW-20 尖峰·背包位
+601d726de9c3962f#战备#LAS-44 新星
+9e7172866dcca25d#枪、装备#？？？
+None#None#None
+78a1a2cc66b6dd09#敌人#？？？
+fec1a70e17127170#敌人#？？？
+00a98a6c294e2c1e#大概环境物体#None
+0239f47d7ed8ef70#枪配件#AMW-20 尖峰 的瞄具
+02eac34262d9b396#披风#None
+03ac7430cfc1c30e#大概环境物体#None
+042257d0ef0cd630#披风#None
+0469bc9171c4cf11#大概环境物体#None
+063f1dc119cacc24#大概环境物体#None
+08bc1443171fde68#大概环境物体#None
+08cf99b612a2ea57#无网格#None
+09e67da2ff0242fe#None#None
+09f19839187ff7dd#None#None
+0e2730c5336d3e49#None#None
+0f18669dc4b8dd62#None#None
+0f814c170854a027#None#None
+13cb5981ba061134#None#None
+145c200b4c76aefd#None#None
+1d7063b43d82eb6b#None#None
+2388f736e6f8cc67#None#None
+2ab24aec788013ff#None#None
+2ad8678b3c3fe28b#None#None
+2aec8a9ef0f889d7#None#None
+2b04201b6c5fe22f#None#None
+2b4df98e409fd7bf#None#None
+2b6ab6f1148adc39#披风#None
+2b974e3ab09e635f#None#None
+2df1706aec523e9a#None#None
+2e9b6f40ecb8f459#None#None
+2fca33da232a3da4#None#None
+2febf39d68f6342d#None#None
+30774740bef87f14#None#None
+3084227928ed5658#None#None
+30e08aad2a67be24#None#None
+31576bd1e5e75074#None#None
+34b3908527dd33d7#None#None
+3512a4886041f7b8#None#None
+36bde64c8f28ca80#None#None
+387f5e235d433473#None#None
+393ba001281e6d97#None#None
+3bf602218609c144#None#None
+3c16b30db6ca69bd#None#None
+3cd734ca8364bd83#None#None
+3f954799603cd1b7#None#None
+417eefc18dd683fc#None#None
+4557b9fad5a3cf1d#None#None
+45e8cd1cdc80ba6a#None#None
+48624871979b2e04#None#None
+4f375f1719b6bb49#None#None
+52e4cdd36b379959#None#None
+53b9d10729fc26ee#None#None
+5420b11a730c344a#None#None
+55467da6083b1ab1#None#None
+55a76482e53a3b9a#None#None
+5634af135202d526#None#None
+5713a4d6f1c92fdd#None#None
+584100e8809d19b4#None#None
+58d05900e30daeb5#None#None
+59741a3fec22cb1b#None#None
+59e86841af796d98#None#None
+5c7379caef78f5d6#None#None
+5c93ddd871175af2#None#None
+5d83cb84def35d01#None#None
+5e34aeea8c0b22e0#None#None
+6056fa6a17b4a31e#None#None
+62798912ffc1fde5#None#None
+652885445f8c3fe0#None#None
+654c36ce997a1fe4#None#None
+676125d01afc4127#None#None
+6a50df6f75a979b0#None#None
+6c4c2c45aad02887#None#None
+6d9969c1c8282c22#None#None
+6ddf2b35f35d3dc0#None#None
+6defeb56bbfa4afa#None#None
+6e6d6e877a96fa6e#None#None
+6eefb28ebe9766b5#None#None
+6f3506e5574afed9#None#None
+70aa50b91e2e0636#None#None
+722311fbee58cae2#枪配件#弹鼓
+72f748d550b4f732#None#None
+77bdf0d6e4f581f7#None#None
+78cbdd1043c0a0d3#None#None
+7b48f4da3824d098#None#None
+7dc2628bc4316689#None#None
+7eb1200b3597e59b#None#None
+7fcfa3aa2f238b44#None#None
+81eb7419655937e1#None#None
+823d8e8d8619b711#None#None
+82638918986ca43e#None#None
+82e2e06bd90298a5#枪配件#None
+8349cb676649732a#None#None
+85f830ee5cfbbb6a#None#None
+883a1d00c0fbedd7#None#None
+88d763af8b54cae3#None#None
+890528342fd7b41d#None#None
+8a8b2dcca603ea98#None#None
+8b9b46aab360eaf0#None#None
+8c2705e33223092e#None#None
+8ced70b5ec294cb3#None#None
+8d5a64f2426e1ffa#None#None
+8e32c99d37a9cebb#None#None
+8ec2ee9804c804fe#None#None
+8f421f355825dea2#None#None
+90a55dfe4b0087cc#None#None
+90afa26ad9cd0ec7#None#None
+92664ff09b5ff515#None#None
+927058a0e1385cf2#None#None
+93ec2524bce8d294#None#None
+93ed394b0075e48f#None#None
+950f689acd4ec759#None#None
+969ba2484fa74c3f#None#None
+97cbbba603972e4c#None#None
+99268e1920be1ccc#None#None
+9dbc5fde51889775#None#None
+9f064aefede28fb3#枪配件#瞄具
+a2fa790b4d1c7c64#None#None
+a3696ba49a647a85#None#None
+a383fab73bf98002#None#None
+a3d216457d0016c4#None#None
+a4698fa6889a6ea7#None#None
+a6e3295281bf3a2e#None#None
+a7d864a49aaa62b3#枪配件#弹夹
+a7fdf2ea8c846118#枪配件#机喵
+a83ef0208ce928ba#None#None
+ab879ed20c22b162#None#None
+ac1e980925c23125#None#None
+ad752614bc6ee8be#None#None
+ad9b726030ba9f0b#None#None
+afd103edd854e46d#None#None
+b0b5f8400e3f3c56#None#None
+b7091a7c5cedb669#None#None
+b9217b820c78981d#None#None
+b93bf3af979f7dfc#None#None
+b93deb3fdf31e1f3#None#None
+b952cdbe925ed9ce#None#None
+b9ffaa250b99896c#None#None
+bb405d2b334101b7#None#None
+bbb6c58f04e815b4#枪配件#弹夹
+bc4eaba166d07185#None#None
+bc9c78be6fcdb111#None#None
+bd5c018f3a0cda6c#None#None
+bd7a9742157b96d2#枪配件#弹夹
+bde35bedab67b824#None#None
+c0b4e192c2caa5c7#None#None
+c0c6cd78179abe8c#None#None
+c1d5da9549085396#None#None
+c2ac45e55c462357#None#None
+c2c3878601749860#None#None
+c3bf6bba4b953d38#None#None
+c3fb9e0caef4c597#None#None
+c433e3c482927693#None#None
+c4aa87f41f97993b#None#None
+c91a77b638f1cfc1#None#None
+c9513611f511290a#大概环境物体#None
+cb274c063399c27e#大概环境物体#None
+ccb648533c27c30c#大概环境物体#None
+cd727bab7547f9bb#大概环境物体#None
+cdbb1e4a178ceb37#大概环境物体#None
+cde71906e3d4f445#大概环境物体#None
+d17e446cae000405#大概环境物体#None
+d505fda50ce7542f#大概环境物体#None
+d50e378cae0d7a35#大概环境物体#None
+d563cd865ca346b8#大概环境物体#None
+d68148754e0c1d88#大概环境物体#None
+da8b6fe64eb62e29#大概环境物体#None
+dd14a3c84f8f7fa6#大概环境物体#None
+e30851953be95ef5#大概环境物体#None
+e548631b673635fa#大概环境物体#None
+e554a6e573a2184d#大概环境物体#None
+e70992821db21e45#大概环境物体#撤离高价值目标 任务相关
+e8277483941423df#大概环境物体#None
+e82dd51e81f1cfc3#大概环境物体#None
+e8aeb4de5100f896#大概环境物体#光能相关
+ea2a651c139653e2#大概环境物体#None
+eb4a4e86740d847f#大概环境物体#None
+ec709a4973017662#大概环境物体#虫巢
+ee4c1b37681d58ce#大概环境物体#None
+f29b44b66404e468#大概环境物体#None
+f46ac0ab32e3f6ed#敌人,建筑#探测塔
+f9a5bf9ffcfd28b7#枪配件#机瞄
+ff46f14599372b2d#大概环境物体#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
+None#None#None
 None#None#None
 None#None#None
 None#None#None
